@@ -96,64 +96,75 @@
 
   function cross(o, a, b) { return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x); }
 
+  // 線分 ab と cd が交わるか（端点でふれるだけは除外）
+  function segCross(a, b, c, d) {
+    if (Math.max(a.x, b.x) < Math.min(c.x, d.x) || Math.max(c.x, d.x) < Math.min(a.x, b.x) ||
+        Math.max(a.y, b.y) < Math.min(c.y, d.y) || Math.max(c.y, d.y) < Math.min(a.y, b.y)) return false;
+    const d1 = cross(a, b, c), d2 = cross(a, b, d), d3 = cross(c, d, a), d4 = cross(c, d, b);
+    return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)) && !!(d1 && d2 && d3 && d4);
+  }
+
   // 自己交差の有無（となり合う辺は除外）
   function selfIntersects(pts) {
     const n = pts.length;
     for (let i = 0; i < n; i++) {
-      const a = pts[i], b = pts[(i + 1) % n];
       for (let j = i + 2; j < n; j++) {
         if (i === 0 && j === n - 1) continue;
-        const c = pts[j], d = pts[(j + 1) % n];
-        if (Math.max(a.x, b.x) < Math.min(c.x, d.x) || Math.max(c.x, d.x) < Math.min(a.x, b.x) ||
-            Math.max(a.y, b.y) < Math.min(c.y, d.y) || Math.max(c.y, d.y) < Math.min(a.y, b.y)) continue;
-        const d1 = cross(a, b, c), d2 = cross(a, b, d), d3 = cross(c, d, a), d4 = cross(c, d, b);
-        if (((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0)) && d1 && d2 && d3 && d4) return true;
+        if (segCross(pts[i], pts[(i + 1) % n], pts[j], pts[(j + 1) % n])) return true;
       }
     }
     return false;
   }
 
-  /* 複数輪郭 → いちばん大きい外形とその中の穴を採用し、重心を計算。
-     入れ子の深さが奇数の輪郭は穴として面積を引く。 */
+  // 2つの輪郭の線が交わるか
+  function contoursIntersect(p, q) {
+    for (let i = 0; i < p.length; i++) {
+      for (let j = 0; j < q.length; j++) {
+        if (segCross(p[i], p[(i + 1) % p.length], q[j], q[(j + 1) % q.length])) return true;
+      }
+    }
+    return false;
+  }
+
+  function distToContour(p, pts) {
+    let d = Infinity;
+    for (let i = 0; i < pts.length; i++) d = Math.min(d, segDist(p, pts[i], pts[(i + 1) % pts.length]));
+    return d;
+  }
+
+  /* 複数輪郭 → 図形ごとに分けて、それぞれの重心を計算。
+     入れ子の深さが偶数の輪郭 = 図形の外形、奇数 = すぐ外側の図形の穴（面積を引く）。 */
   function analyze(contours) {
     const cs = contours.filter(c => c.length >= 3 && Math.abs(signedArea(c)) > 1e-9);
     if (!cs.length) return null;
-    const depth = cs.map((c, i) => {
-      let d = 0;
-      for (let j = 0; j < cs.length; j++) if (j !== i && pointInPolygon(c[0], cs[j])) d++;
-      return d;
-    });
-    let outer = -1, best = 0, outerCount = 0;
+    const within = cs.map((c, i) => cs.map((o, j) => j !== i && pointInPolygon(c[0], o)));
+    const depth = within.map(r => r.filter(Boolean).length);
+    const shapes = [], owner = [];
     cs.forEach((c, i) => {
-      if (depth[i] !== 0) return;
-      outerCount++;
-      const a = Math.abs(signedArea(c));
-      if (a > best) { best = a; outer = i; }
+      if (depth[i] % 2 === 0) { owner[i] = shapes.length; shapes.push({ contours: [{ pts: c, hole: false }] }); }
     });
-    const used = [];
     cs.forEach((c, i) => {
-      if (i === outer || pointInPolygon(c[0], cs[outer])) used.push({ pts: c, hole: depth[i] % 2 === 1 });
+      if (depth[i] % 2 === 0) return;
+      const parent = cs.findIndex((o, j) => within[i][j] && depth[j] === depth[i] - 1);
+      if (parent >= 0) shapes[owner[parent]].contours.push({ pts: c, hole: true });
     });
-    let A = 0, sx = 0, sy = 0;
-    for (const u of used) {
-      const g = polygonCentroid(u.pts);
-      const a = Math.abs(g.area) * (u.hole ? -1 : 1);
-      A += a; sx += g.x * a; sy += g.y * a;
+    for (const s of shapes) {
+      let A = 0, sx = 0, sy = 0;
+      for (const u of s.contours) {
+        const g = polygonCentroid(u.pts);
+        const a = Math.abs(g.area) * (u.hole ? -1 : 1);
+        A += a; sx += g.x * a; sy += g.y * a;
+      }
+      const c = s.centroid = { x: sx / A, y: sy / A };
+      s.area = A;
+      s.bbox = bbox([s.contours[0].pts]);
+      // 重心が材料の上にあるか
+      s.inside = s.contours.every(u => pointInPolygon(c, u.pts) !== u.hole);
+      // 重心からふちまでの最短距離
+      s.edgeDist = Math.min(...s.contours.map(u => distToContour(c, u.pts)));
     }
-    const c = { x: sx / A, y: sy / A };
-    const all = used.map(u => u.pts);
-    let crossings = 0;
-    for (const p of all) if (pointInPolygon(c, p)) crossings++;
-    let edge = Infinity;
-    for (const p of all) for (let i = 0; i < p.length; i++) {
-      edge = Math.min(edge, segDist(c, p[i], p[(i + 1) % p.length]));
-    }
-    return {
-      contours: used, centroid: c, area: A, bbox: bbox(all),
-      inside: crossings % 2 === 1,   // 重心が材料の上にあるか
-      edgeDist: edge,                // 重心からふちまでの最短距離
-      droppedShapes: outerCount - 1,
-    };
+    shapes.sort((p, q) => p.centroid.x - q.centroid.x);
+    return { shapes, bbox: bbox(cs) };
   }
 
   /* ---------- DXF ---------- */
@@ -292,33 +303,37 @@
 
   /* ---------- レーザ加工機用SVG ---------- */
 
-  // opt: { contours:[{pts}], centroid, bbox, mmPerUnit, mark:'hole'|'cross'|'none', holeDiameter, margin }
+  // opt: { shapes, bbox, mmPerUnit, mark:'hole'|'cross'|'none', holeDiameter, margin }
+  // 重心が材料の外にある図形には しるしを付けない
   function buildSVG(opt) {
     const k = opt.mmPerUnit, m = opt.margin == null ? 5 : opt.margin, b = opt.bbox;
     const f = v => (Math.round(v * 1000) / 1000).toString();
     const X = x => f((x - b.minX) * k + m), Y = y => f((y - b.minY) * k + m);
     const W = f(b.w * k + 2 * m), H = f(b.h * k + 2 * m);
-    const d = opt.contours.map(c =>
-      'M' + c.pts.map(p => X(p.x) + ' ' + Y(p.y)).join(' L') + ' Z').join(' ');
-    const cx = X(opt.centroid.x), cy = Y(opt.centroid.y);
     const cut = 'fill="none" stroke="#ff0000" stroke-width="0.1"';
     const mark = 'fill="none" stroke="#0000ff" stroke-width="0.1"';
-    let extra = '';
-    if (opt.mark === 'hole') {
-      extra = `  <circle id="shaft-hole" cx="${cx}" cy="${cy}" r="${f(opt.holeDiameter / 2)}" ${cut}/>\n`;
-    } else if (opt.mark === 'cross') {
-      const s = 3;
-      extra = `  <path id="centroid-mark" d="M${f(+cx - s)} ${cy} H${f(+cx + s)} M${cx} ${f(+cy - s)} V${f(+cy + s)}" ${mark}/>\n`;
-    }
+    let body = '';
+    opt.shapes.forEach((s, i) => {
+      const d = s.contours.map(c => 'M' + c.pts.map(p => X(p.x) + ' ' + Y(p.y)).join(' L') + ' Z').join(' ');
+      const cx = X(s.centroid.x), cy = Y(s.centroid.y), n = i + 1;
+      body += `  <g id="shape-${n}">\n    <!-- 重心 (${cx}, ${cy}) -->\n` +
+        `    <path id="outline-${n}" d="${d}" fill-rule="evenodd" ${cut}/>\n`;
+      if (s.inside && opt.mark === 'hole') {
+        body += `    <circle id="shaft-hole-${n}" cx="${cx}" cy="${cy}" r="${f(opt.holeDiameter / 2)}" ${cut}/>\n`;
+      } else if (s.inside && opt.mark === 'cross') {
+        const r = 3;
+        body += `    <path id="centroid-mark-${n}" d="M${f(+cx - r)} ${cy} H${f(+cx + r)} M${cx} ${f(+cy - r)} V${f(+cy + r)}" ${mark}/>\n`;
+      }
+      body += '  </g>\n';
+    });
     return `<?xml version="1.0" encoding="UTF-8"?>\n` +
       `<svg xmlns="http://www.w3.org/2000/svg" width="${W}mm" height="${H}mm" viewBox="0 0 ${W} ${H}">\n` +
-      `  <!-- 単位: mm / 赤 = 切断, 青 = けがき(彫刻) / 重心 (${cx}, ${cy}) -->\n` +
-      `  <path id="outline" d="${d}" fill-rule="evenodd" ${cut}/>\n` + extra + `</svg>\n`;
+      `  <!-- 単位: mm / 赤 = 切断, 青 = けがき(彫刻) -->\n` + body + `</svg>\n`;
   }
 
   const Geo = {
     signedArea, polygonCentroid, bbox, pointInPolygon, simplifyClosed, smoothClosed,
-    selfIntersects, analyze, parseDXF, buildSVG,
+    selfIntersects, contoursIntersect, distToContour, analyze, parseDXF, buildSVG,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = Geo;
   else root.Geo = Geo;

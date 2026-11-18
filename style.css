@@ -31,14 +31,14 @@ main {
 #msg.bad { background: #ffe6e6; border-color: #ef6b6b; }
 #msg.good { background: #e3f9e5; border-color: #53b96a; }
 
-#shape { fill: #ffd76a; fill-opacity: .85; stroke: #c0392b; stroke-width: 1; stroke-linejoin: round; }
+.shape { fill: #ffd76a; fill-opacity: .85; stroke: #c0392b; stroke-width: 1; stroke-linejoin: round; }
 #live { fill: none; stroke: #c0392b; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
 #closer { stroke: #c0392b; stroke-width: .6; stroke-dasharray: 2 2; }
-#hole { fill: #fff; stroke: #c0392b; stroke-width: .6; }
-#cross { stroke: #1b3fd6; stroke-width: .8; fill: none; }
-#guessDot { fill: #8e44ad; stroke: #fff; stroke-width: .5; }
-#guessLabel { fill: #8e44ad; font-weight: bold; pointer-events: none; }
-#pivot { fill: #111; }
+.hole { fill: #fff; stroke: #c0392b; stroke-width: .6; }
+.cross { stroke: #1b3fd6; stroke-width: .8; fill: none; }
+.guessDot { fill: #8e44ad; stroke: #fff; stroke-width: .5; }
+.guessLabel, .numLabel { fill: #8e44ad; font-weight: bold; pointer-events: none; }
+.pivot { fill: #111; }
 
 .panel { display: flex; flex-direction: column; gap: 12px; }
 .step { background: #fff; border-radius: 14px; padding: 12px 14px; box-shadow: 0 1px 4px rgba(0, 40, 90, .12); }
@@ -75,5 +75,7 @@ details ul { margin: 6px 0; padding-left: 1.2em; }
 summary { cursor: pointer; font-weight: bold; }
 
 #svgHost { position: absolute; left: -99999px; top: 0; visibility: hidden; }
+
+.numLabel { fill: #1b3fd6; }
 
 [hidden] { display: none !important; }

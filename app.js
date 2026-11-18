@@ -2,19 +2,21 @@
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
-  const stage = $('stage'), shapeEl = $('shape'), shapeG = $('shapeG'), live = $('live'), closer = $('closer');
+  const stage = $('stage'), shapeG = $('shapeG'), live = $('live'), closer = $('closer');
   const VIEW = 200;           // おえかきエリアの一辺（描画単位）
   const MIN_EDGE_MM = 1.5;    // あなのふちから外形までの最低のこりしろ
+  const TAP_MAX = 4;          // これより小さい動きはタップあつかい
+  const NUMS = '①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳';
+  const numLabel = i => NUMS[i] || `(${i + 1})`;
 
   const state = {
-    raw: null,        // 元の輪郭（点列の配列）
-    source: null,     // 'draw' | 'file' | 'preset'
-    res: null,        // Geo.analyze の結果
+    raw: [],          // 元の輪郭 { pts, drawn }。drawn = 手がき（簡略化・平滑化の対象）
+    res: null,        // Geo.analyze の結果 { shapes, bbox }
     crossing: false,  // 線が交わっている
     revealed: false,
-    guess: null,
+    guesses: [],      // よそうの点（図形ごとに1つ）
     drawing: null,    // かいている途中の点列
-    spin: null,       // { raf, pivot }
+    spin: null,       // { raf }
   };
 
   /* ---------- 表示まわり ---------- */
@@ -31,88 +33,113 @@
   const pathD = contours => contours.map(c =>
     'M' + c.map(p => p.x.toFixed(2) + ' ' + p.y.toFixed(2)).join('L') + 'Z').join('');
 
+  // 点 p がどの図形のものか：中にあればその図形（入れ子なら小さいほう）、なければ いちばん近い図形
+  function shapeIndexAt(p) {
+    const shapes = state.res ? state.res.shapes : [];
+    let best = -1, bestV = Infinity;
+    shapes.forEach((s, i) => {
+      if (Geo.pointInPolygon(p, s.contours[0].pts) && s.bbox.w * s.bbox.h < bestV) { best = i; bestV = s.bbox.w * s.bbox.h; }
+    });
+    if (best >= 0) return best;
+    shapes.forEach((s, i) => {
+      const d = Geo.distToContour(p, s.contours[0].pts);
+      if (d < bestV) { best = i; bestV = d; }
+    });
+    return best;
+  }
+  const guessFor = i => state.guesses.find(g => shapeIndexAt(g) === i);
+
   function render() {
     const r = state.res, k = mmPerUnit();
+    const shapes = r ? r.shapes : [], many = shapes.length > 1;
     // 方眼：1マス = 10mm
     const g = 10 / k;
     $('grid').setAttribute('width', g); $('grid').setAttribute('height', g);
     $('gridPath').setAttribute('d', `M${g} 0H0V${g}`);
 
-    shapeEl.setAttribute('d', r ? pathD(r.contours.map(c => c.pts)) : '');
-    const ok = !!r && !state.crossing;
-    const mode = $('markMode').value;
+    const ok = !!r && !state.crossing, shown = ok && state.revealed;
+    const mode = $('markMode').value, hd = holeDiameter();
+    const results = [], warns = [];
 
-    setHidden('answer', !(ok && state.revealed));
-    if (ok) {
-      const c = r.centroid, hr = holeDiameter() / 2 / k, s = Math.max(hr + 2, 4);
-      $('hole').setAttribute('cx', c.x); $('hole').setAttribute('cy', c.y);
-      $('hole').setAttribute('r', hr);
-      $('hole').style.display = mode === 'hole' ? '' : 'none';
-      $('cross').setAttribute('d', `M${c.x - s} ${c.y}H${c.x + s}M${c.x} ${c.y - s}V${c.y + s}`);
-    }
-    setHidden('guess', !state.guess);
-    if (state.guess) {
-      $('guessDot').setAttribute('cx', state.guess.x); $('guessDot').setAttribute('cy', state.guess.y);
-      $('guessLabel').setAttribute('x', state.guess.x + 3.5); $('guessLabel').setAttribute('y', state.guess.y - 3);
-    }
+    shapeG.innerHTML = shapes.map((s, i) => {
+      const c = s.centroid, hr = hd / 2 / k, arm = Math.max(hr + 2, 4), gp = guessFor(i);
+      let h = `<g><path class="shape" fill-rule="evenodd" d="${pathD(s.contours.map(u => u.pts))}"/>`;
+      if (shown) {
+        if (mode === 'hole' && s.inside) h += `<circle class="hole" cx="${c.x}" cy="${c.y}" r="${hr}"/>`;
+        h += `<path class="cross" d="M${c.x - arm} ${c.y}H${c.x + arm}M${c.x} ${c.y - arm}V${c.y + arm}"/>`;
+        if (many) h += `<text class="numLabel" font-size="7" x="${c.x + arm * 0.5}" y="${c.y - arm * 0.5}">${numLabel(i)}</text>`;
+      }
+      if (gp) {
+        h += `<circle class="guessDot" r="2.2" cx="${gp.x}" cy="${gp.y}"/>` +
+          `<text class="guessLabel" font-size="6" x="${gp.x + 3.5}" y="${gp.y + 7}">よそう</text>`;
+      }
+      if (shown) {
+        const tag = many ? numLabel(i) + ' ' : '重心は ';
+        let line = `${tag}左から ${((c.x - r.bbox.minX) * k).toFixed(1)} mm、上から ${((c.y - r.bbox.minY) * k).toFixed(1)} mm` + (many ? '' : ' のところ！');
+        if (gp) {
+          const d = Math.hypot(gp.x - c.x, gp.y - c.y) * k;
+          line += (many ? ' ／ ' : '<br>') + `よそうとのずれ：${d.toFixed(1)} mm ` + (d < 2 ? '🎯 ぴったり！' : d < 6 ? '👏 おしい！' : '🤔 はなれていたね');
+        }
+        results.push(line);
+        const who = many ? numLabel(i) + 'は、' : '';
+        if (!s.inside) warns.push(who + '重心が形の外（材料のないところ）にあるよ。じくをさせないので、しるしは付かない。形をかえてみよう！');
+        else if (mode === 'hole' && s.edgeDist * k < hd / 2 + MIN_EDGE_MM) warns.push(who + 'あながふちに近すぎて、われやすいよ。形を大きくするか、じくを細くしよう。');
+      }
+      return h + '</g>';
+    }).join('');
 
     setHidden('shaftField', mode !== 'hole');
     setHidden('shaftCustomWrap', $('shaft').value !== 'custom');
-    $('dims').textContent = r ? `よこ ${(r.bbox.w * k).toFixed(1)} mm × たて ${(r.bbox.h * k).toFixed(1)} mm` : '';
+    $('dims').textContent = r ? `${many ? 'ぜんたい：' : ''}よこ ${(r.bbox.w * k).toFixed(1)} mm × たて ${(r.bbox.h * k).toFixed(1)} mm` : '';
+    $('result').innerHTML = (shown && many ? '重心の場所（ぜんたいの左上から）<br>' : '') + results.join('<br>');
+    $('warn').innerHTML = warns.join('<br>');
 
-    // こたえ・注意
-    let result = '', warn = '', canDownload = ok && state.revealed;
-    if (ok && state.revealed) {
-      const c = r.centroid;
-      result = `重心は 左から ${((c.x - r.bbox.minX) * k).toFixed(1)} mm、上から ${((c.y - r.bbox.minY) * k).toFixed(1)} mm のところ！`;
-      if (state.guess) {
-        const d = Math.hypot(state.guess.x - c.x, state.guess.y - c.y) * k;
-        result += `<br>よそうとのずれ：${d.toFixed(1)} mm ` + (d < 2 ? '🎯 ぴったり！' : d < 6 ? '👏 おしい！' : '🤔 けっこうはなれていたね');
-      }
-      if (!r.inside) {
-        warn = '重心が形の外（材料のないところ）にあるよ。このままではじくをさせない。形をかえてみよう！';
-        canDownload = false;
-      } else if (mode === 'hole' && r.edgeDist * k < holeDiameter() / 2 + MIN_EDGE_MM) {
-        warn = 'あながふちに近すぎて、われやすいよ。形を大きくするか、じくを細くしよう。';
-      }
-    }
-    $('result').innerHTML = result;
-    $('warn').textContent = warn;
-
+    $('btnUndo').disabled = !state.raw.length;
     $('btnReveal').disabled = !ok || state.revealed;
-    $('btnDownload').disabled = !canDownload;
-    $('btnSpinC').disabled = !(ok && state.revealed);
-    $('btnSpinG').disabled = !(ok && state.revealed && state.guess);
+    $('btnDownload').disabled = !(shown && shapes.some(s => s.inside));
+    $('btnSpinC').disabled = !shown;
+    $('btnSpinG').disabled = !(shown && state.guesses.length);
     $('btnStop').disabled = !state.spin;
   }
 
   /* ---------- 形の登録 ---------- */
 
+  function processDrawn(pts) {
+    const s = Geo.simplifyClosed(pts, 0.6);
+    return $('smooth').checked ? Geo.smoothClosed(s, 2) : s;
+  }
+
+  function hasCrossing(cs) {
+    for (let i = 0; i < cs.length; i++) {
+      if (Geo.selfIntersects(cs[i])) return true;
+      for (let j = i + 1; j < cs.length; j++) if (Geo.contoursIntersect(cs[i], cs[j])) return true;
+    }
+    return false;
+  }
+
   function rebuild() {
     stopSpin();
-    let cs = state.raw || [];
-    if (state.source === 'draw') {
-      cs = cs.map(c => Geo.simplifyClosed(c, 0.6));
-      if ($('smooth').checked) cs = cs.map(c => Geo.smoothClosed(c, 2));
-    }
+    const cs = state.raw.map(r => r.drawn ? processDrawn(r.pts) : r.pts);
     state.res = Geo.analyze(cs);
-    state.crossing = !!state.res && state.res.contours.some(c => Geo.selfIntersects(c.pts));
+    state.crossing = !!state.res && hasCrossing(cs);
     if (!state.res) setMsg('ここに ひとふでがきで 形をかいてね ✏️');
-    else if (state.crossing) setMsg('線がとちゅうで交わっている形だよ。正しく計算できないので、べつの形にしよう。', 'bad');
-    else if (!state.revealed) setMsg('形ができた！ 重心はどこかな？ 形の上をタップしてよそうしよう。');
+    else if (state.crossing) setMsg('線が交わっている形があるよ。正しく計算できないので、べつの形にしよう。', 'bad');
+    else if (!state.revealed) {
+      const n = state.res.shapes.length;
+      setMsg((n > 1 ? `形が ${n} こできた！ それぞれの` : '形ができた！ ') + '重心はどこかな？ 形の上をタップしてよそうしよう。');
+    } else setMsg('重心は 十字のしるしのところ！', 'good');
     render();
   }
 
-  function setShape(contours, source, note) {
-    state.raw = contours; state.source = source;
-    state.revealed = false; state.guess = null;
+  function setShapes(contours, note) {
+    state.raw = contours.map(pts => ({ pts, drawn: false }));
+    state.revealed = false; state.guesses = [];
     rebuild();
     if (note && state.res && !state.crossing) setMsg(note);
   }
 
   function clearAll() {
-    state.raw = null; state.source = null; state.revealed = false; state.guess = null;
-    live.setAttribute('points', '');
+    state.raw = []; state.revealed = false; state.guesses = [];
     rebuild();
   }
 
@@ -128,7 +155,7 @@
     $('sizeNum').value = mm; $('size').value = Math.min(200, Math.max(20, mm));
   }
 
-  /* ---------- おえかき ---------- */
+  /* ---------- おえかき・よそう ---------- */
 
   function toView(e) {
     const m = stage.getScreenCTM();
@@ -136,19 +163,10 @@
   }
 
   stage.addEventListener('pointerdown', e => {
-    if (e.button > 0 || state.spin) return;
-    const p = toView(e);
-    if (state.res) {           // 形があるとき：タップ = よそう
-      if (!state.crossing && !state.revealed) {
-        state.guess = p;
-        setMsg('よそうできたね！ 「こたえを見る」をおしてみよう。（タップしなおしてもOK）');
-        render();
-      }
-      return;
-    }
+    if (e.button > 0 || state.spin || state.drawing) return;
     e.preventDefault();
     stage.setPointerCapture(e.pointerId);
-    state.drawing = [p];
+    state.drawing = [toView(e)];
   });
 
   stage.addEventListener('pointermove', e => {
@@ -159,12 +177,27 @@
       const p = toView(ev), q = d[d.length - 1];
       if (Math.hypot(p.x - q.x, p.y - q.y) >= 0.8) d.push(p);
     }
+    const b = Geo.bbox([d]);
+    if (Math.max(b.w, b.h) < TAP_MAX) return;
     live.setAttribute('points', d.map(p => p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' '));
-    const a = d[0], b = d[d.length - 1];
-    closer.setAttribute('x1', b.x); closer.setAttribute('y1', b.y);
+    const a = d[0], z = d[d.length - 1];
+    closer.setAttribute('x1', z.x); closer.setAttribute('y1', z.y);
     closer.setAttribute('x2', a.x); closer.setAttribute('y2', a.y);
     closer.style.display = '';
   });
+
+  function tap(p) {
+    if (!state.res) { setMsg('ゆびをはなさずに、ぐるっと形をかいてね ✏️'); return; }
+    if (state.crossing || state.revealed) return;
+    const i = shapeIndexAt(p);
+    state.guesses = state.guesses.filter(g => shapeIndexAt(g) !== i);
+    state.guesses.push(p);
+    const left = state.res.shapes.length - state.guesses.length;
+    setMsg(left > 0
+      ? `よそうできたね！ のこり ${left} この形もよそうしてみよう。（そのまま「こたえを見る」でもOK）`
+      : 'よそうできたね！ 「こたえを見る」をおしてみよう。（タップしなおしてもOK）');
+    render();
+  }
 
   function endDraw() {
     const d = state.drawing;
@@ -172,15 +205,25 @@
     state.drawing = null;
     live.setAttribute('points', ''); closer.style.display = 'none';
     const b = Geo.bbox([d]);
-    if (Geo.selfIntersects(Geo.simplifyClosed(d, 0.6))) {
+    if (Math.max(b.w, b.h) < TAP_MAX) { tap(d[0]); return; }
+    const simple = Geo.simplifyClosed(d, 0.6);
+    if (Geo.selfIntersects(simple)) {
       setMsg('線がとちゅうで交わっているよ。交わらないように、もういちどかいてみよう。', 'bad');
       return;
     }
-    if (d.length < 8 || Math.max(b.w, b.h) < 20 || Math.abs(Geo.signedArea(d)) < 60) {
+    if (d.length < 8 || Math.max(b.w, b.h) < 12 || Math.abs(Geo.signedArea(d)) < 40) {
       setMsg('小さすぎるみたい。もっと大きく、ぐるっとかいてね。', 'bad');
       return;
     }
-    setShape([d], 'draw');
+    const pts = processDrawn(d);
+    const others = state.raw.map(r => r.drawn ? processDrawn(r.pts) : r.pts);
+    if (others.some(o => Geo.contoursIntersect(pts, o))) {
+      setMsg('ほかの形と線が重なっているよ。はなしてかくか、すっぽり中にかいてね。', 'bad');
+      return;
+    }
+    state.raw.push({ pts: d, drawn: true });
+    state.revealed = false;
+    rebuild();
   }
   stage.addEventListener('pointerup', endDraw);
   stage.addEventListener('pointercancel', endDraw);
@@ -214,7 +257,7 @@
   };
   document.querySelectorAll('[data-preset]').forEach(b => b.addEventListener('click', () => {
     setSize(60);
-    setShape([presets[b.dataset.preset]()], 'preset');
+    setShapes([presets[b.dataset.preset]()]);
   }));
 
   /* ---------- ファイル読みこみ ---------- */
@@ -326,10 +369,10 @@
       contours = contours.map(c => Geo.simplifyClosed(c, diag * 0.0004));
       const res = Geo.analyze(contours);
       setSize(Math.max(res.bbox.w, res.bbox.h) * unitMm);
-      let note = `「${file.name}」を読みこんだよ！ 重心はどこかな？ タップしてよそうしよう。`;
-      if (res.droppedShapes > 0) note += `<br>（形が ${res.droppedShapes + 1} こあったので、いちばん大きいものを使うね）`;
+      const n = res.shapes.length;
+      let note = `「${file.name}」を読みこんだよ！` + (n > 1 ? ` 形が ${n} こあるね。それぞれの` : ' ') + '重心はどこかな？ タップしてよそうしよう。';
       if (skipped) note += `<br>（スプライン・だ円 ${skipped} こは未対応のためとばしたよ）`;
-      setShape(fitToView(res.contours.map(c => c.pts)), 'file', note);
+      setShapes(fitToView(contours), note);
     } catch (err) {
       clearAll();
       setMsg(err.message || 'ファイルを読みこめなかったよ。', 'bad');
@@ -351,8 +394,7 @@
 
   $('btnReveal').addEventListener('click', () => {
     state.revealed = true;
-    const r = state.res;
-    if (!r.inside) setMsg('重心は ここ！ …あれ？ 形の外にあるね。へこんだ形だと、こういうことがおきるよ。', 'bad');
+    if (state.res.shapes.some(s => !s.inside)) setMsg('重心は ここ！ …あれ？ 形の外にあるものがあるね。へこんだ形だと、こういうことがおきるよ。', 'bad');
     else setMsg('重心は ここ！ ここにじくをさすと、ぶれずにまわるコマになるよ。', 'good');
     render();
   });
@@ -361,35 +403,40 @@
     if (!state.spin) return;
     cancelAnimationFrame(state.spin.raf);
     state.spin = null;
-    shapeG.removeAttribute('transform');
-    setHidden('pivot', true);
+    $('pivots').innerHTML = '';
+    for (const g of shapeG.children) g.removeAttribute('transform');
   }
 
-  function startSpin(pivot, isCentroid) {
+  // 図形ごとに、それぞれの軸（重心 or よそうの点）でまわす
+  function startSpin(useGuess) {
     stopSpin();
-    $('pivot').setAttribute('cx', pivot.x); $('pivot').setAttribute('cy', pivot.y);
-    setHidden('pivot', false);
+    const pivots = state.res.shapes.map((s, i) => (useGuess && guessFor(i)) || s.centroid);
+    $('pivots').innerHTML = pivots.map(p => `<circle class="pivot" r="1.2" cx="${p.x}" cy="${p.y}"/>`).join('');
     const spin = state.spin = { raf: 0 };
     let angle = 0, last = performance.now();
     const tick = now => {
       angle = (angle + (now - last) * 0.36) % 360;   // 1秒で1回転
       last = now;
-      shapeG.setAttribute('transform', `rotate(${angle.toFixed(2)} ${pivot.x} ${pivot.y})`);
+      pivots.forEach((p, i) => {
+        const g = shapeG.children[i];
+        if (g) g.setAttribute('transform', `rotate(${angle.toFixed(2)} ${p.x} ${p.y})`);
+      });
       spin.raf = requestAnimationFrame(tick);
     };
     spin.raf = requestAnimationFrame(tick);
-    setMsg(isCentroid
-      ? '重心でまわすと、重さのまん中がうごかない。だから ぶれにくい！'
-      : 'よそうの点でまわすと、重心（十字のしるし）がぐるぐるうごく。これが「ぶれ」のもと！');
+    setMsg(useGuess
+      ? 'よそうの点でまわすと、重心（十字のしるし）がぐるぐるうごく。これが「ぶれ」のもと！'
+      : '重心でまわすと、重さのまん中がうごかない。だから ぶれにくい！');
     render();
   }
-  $('btnSpinC').addEventListener('click', () => startSpin(state.res.centroid, true));
-  $('btnSpinG').addEventListener('click', () => startSpin(state.guess, false));
+  $('btnSpinC').addEventListener('click', () => startSpin(false));
+  $('btnSpinG').addEventListener('click', () => startSpin(true));
   $('btnStop').addEventListener('click', () => { stopSpin(); render(); });
 
   /* ---------- 設定・ダウンロード ---------- */
 
   $('btnClear').addEventListener('click', clearAll);
+  $('btnUndo').addEventListener('click', () => { state.raw.pop(); state.guesses = []; rebuild(); });
   $('smooth').addEventListener('change', rebuild);
   $('size').addEventListener('input', () => { $('sizeNum').value = $('size').value; render(); });
   $('sizeNum').addEventListener('input', () => { $('size').value = $('sizeNum').value; render(); });
@@ -398,7 +445,7 @@
   $('btnDownload').addEventListener('click', () => {
     const r = state.res;
     const svg = Geo.buildSVG({
-      contours: r.contours, centroid: r.centroid, bbox: r.bbox,
+      shapes: r.shapes, bbox: r.bbox,
       mmPerUnit: mmPerUnit(), mark: $('markMode').value, holeDiameter: holeDiameter(),
     });
     const a = document.createElement('a');
