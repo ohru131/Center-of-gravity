@@ -86,15 +86,21 @@
     return filled;
   }
 
+  const GAPS = [0, 1, 2, 3, 5, 8, 12];  // 自動でためす つなぎ幅
+  const THIN = 6;                       // はば 13 画素以下のものは「線」とみなす
+
   // 線を gap だけ太らせてすきまをつなぎ、内側をぬりつぶしてから同じだけ細らせる
   function shapesAt(ink, w, h, gap, minArea) {
     const filled = spread(fillEnclosed(spread(ink, w, h, gap, 1), w, h), w, h, gap, 0);
     const { labels, stats } = label(filled, w, h);
+    // 細らせても残る = 面としての太さがある。とじていない線の切れはしは消える
+    const core = spread(filled, w, h, THIN, 0), solid = new Uint8Array(stats.length);
+    for (let i = 0; i < w * h; i++) if (core[i]) solid[labels[i]] = 1;
     const keep = [];
     let area = 0;
-    // ふちにかかるもの（机・かげなど）と小さいゴミはすてる
+    // ふちにかかるもの（机・かげなど）、小さいゴミ、ただの線はすてる
     for (let id = 1; id < stats.length; id++) {
-      if (!stats[id].border && stats[id].area >= minArea) { keep.push(id); area += stats[id].area; }
+      if (!stats[id].border && solid[id] && stats[id].area >= minArea) { keep.push(id); area += stats[id].area; }
     }
     return { labels, stats, keep, area };
   }
@@ -123,7 +129,7 @@
     return pts;
   }
 
-  const GAPS = [0, 1, 2, 3, 5, 8, 12];
+
 
   /* gray: Uint8Array(w*h) の明るさ。opt.t: 二値化の強さ(0〜1)、opt.gap: つなぐ幅(px, 省略で自動)
      戻り値 { contours: [[{x,y}…]…], gap } */
