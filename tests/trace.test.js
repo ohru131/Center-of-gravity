@@ -66,3 +66,22 @@ test('とじていない線（半円）は形にしない', () => {
   assert.strictEqual(Trace.detect(g, w, h).contours.length, 0);
   assert.strictEqual(Trace.detect(g, w, h, { gap: 2 }).contours.length, 0);
 });
+
+test('画像のふち近くの形も、とぎれをつないで取れる（形ごとに つなぎ幅を自動選択）', () => {
+  const w = 320, h = 200, g = canvas(w, h);
+  ring(g, w, 76, 100, 70, 3, 60, a => a > 2 && a < 2.07);   // 左のふちから 4 画素、とぎれあり
+  ring(g, w, 240, 100, 40, 3, 60);                          // とぎれなし
+  const { contours } = Trace.detect(g, w, h);
+  assert.strictEqual(contours.length, 2);
+  const areas = contours.map(areaOf).sort((a, b) => a - b);
+  near(areas[0], Math.PI * 41.5 ** 2, 400);
+  near(areas[1], Math.PI * 71.5 ** 2, 900);
+});
+
+test('感度の目安：きれいな背景は高感度、ざらついた写真はひかえめ', () => {
+  const w = 200, h = 150, clean = canvas(w, h), noisy = canvas(w, h);
+  let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < noisy.length; i++) noisy[i] = Math.max(0, Math.min(255, noisy[i] + Math.round((rnd() - 0.5) * 30)));
+  assert.ok(Trace.suggestThreshold(clean, w, h) <= 0.05);
+  assert.ok(Trace.suggestThreshold(noisy, w, h) >= 0.1);
+});

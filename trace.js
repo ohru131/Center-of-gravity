@@ -89,20 +89,25 @@
   const GAPS = [0, 1, 2, 3, 5, 8, 12];  // 自動でためす つなぎ幅
   const THIN = 6;                       // はば 13 画素以下のものは「線」とみなす
 
-  // 線を gap だけ太らせてすきまをつなぎ、内側をぬりつぶしてから同じだけ細らせる
-  function shapesAt(ink, w, h, gap, minArea) {
+  /* 線を gap だけ太らせてすきまをつなぎ、内側をぬりつぶしてから同じだけ細らせる。
+     m = 画像のまわりに足した余白の幅（余白の内がわの線 = 元の画像のふち） */
+  function shapesAt(ink, w, h, gap, minArea, m) {
     const filled = spread(fillEnclosed(spread(ink, w, h, gap, 1), w, h), w, h, gap, 0);
     const { labels, stats } = label(filled, w, h);
     // 細らせても残る = 面としての太さがある。とじていない線の切れはしは消える
     const core = spread(filled, w, h, THIN, 0), solid = new Uint8Array(stats.length);
     for (let i = 0; i < w * h; i++) if (core[i]) solid[labels[i]] = 1;
+    // 元の画像のふちにかかるもの（机・かげなど）
+    const edge = new Uint8Array(stats.length);
+    for (let x = m; x < w - m; x++) { edge[labels[m * w + x]] = 1; edge[labels[(h - 1 - m) * w + x]] = 1; }
+    for (let y = m; y < h - m; y++) { edge[labels[y * w + m]] = 1; edge[labels[y * w + w - 1 - m]] = 1; }
     const keep = [];
     let area = 0;
-    // ふちにかかるもの（机・かげなど）、小さいゴミ、ただの線はすてる
+    // ふちにかかるもの、小さいゴミ、ただの線はすてる
     for (let id = 1; id < stats.length; id++) {
-      if (!stats[id].border && solid[id] && stats[id].area >= minArea) { keep.push(id); area += stats[id].area; }
+      if (!edge[id] && solid[id] && stats[id].area >= minArea) { keep.push(id); area += stats[id].area; }
     }
-    return { labels, stats, keep, area };
+    return { labels, stats, keep, area, gap };
   }
 
   /* 領域 id の外周を、画素のさかい目にそってたどる（領域を右手に見て一周）。
@@ -131,33 +136,70 @@
 
 
 
+  /* 二値化の強さの目安。背景のざらつき（ノイズ）が小さい画像ほど、うすい線までひろう。
+     きれいな背景の画像 → 0.03 前後、紙を写した写真 → 0.1 前後 */
+  function suggestThreshold(gray, w, h) {
+    const hist = new Int32Array(256);
+    let n = 0;
+    for (let y = 1; y < h - 1; y += 2) {
+      for (let x = 1; x < w - 1; x += 2) {
+        const i = y * w + x;
+        const d = Math.abs(4 * gray[i] - gray[i - 1] - gray[i + 1] - gray[i - w] - gray[i + w]) >> 2;
+        hist[d]++; n++;
+      }
+    }
+    let acc = 0, med = 0;
+    while (med < 255 && (acc += hist[med]) < n / 2) med++;   // となりとの差の中央値
+    return Math.min(0.15, 0.03 + med * 0.02);
+  }
+
   /* gray: Uint8Array(w*h) の明るさ。opt.t: 二値化の強さ(0〜1)、opt.gap: つなぐ幅(px, 省略で自動)
      戻り値 { contours: [[{x,y}…]…], gap } */
   function detect(gray, w, h, opt) {
     opt = opt || {};
-    const ink = adaptiveInk(gray, w, h, opt.t == null ? 0.15 : opt.t);
+    const ink0 = adaptiveInk(gray, w, h, opt.t == null ? 0.15 : opt.t);
     // ぽつんと離れた数画素のノイズを消す。かすれた線のかけらは、近くの線とまとめて数えるので残る
-    const near = label(spread(ink, w, h, 1, 1), w, h);
+    const near = label(spread(ink0, w, h, 1, 1), w, h);
     const count = new Int32Array(near.stats.length);
-    for (let i = 0; i < w * h; i++) if (ink[i]) count[near.labels[i]]++;
-    for (let i = 0; i < w * h; i++) if (ink[i] && count[near.labels[i]] < 6) ink[i] = 0;
+    for (let i = 0; i < w * h; i++) if (ink0[i]) count[near.labels[i]]++;
+    for (let i = 0; i < w * h; i++) if (ink0[i] && count[near.labels[i]] < 6) ink0[i] = 0;
+
+    // 画像のふち近くの形が欠けないよう、まわりに白い余白を足して処理する
+    const m = Math.max(opt.gap || 0, GAPS[GAPS.length - 1]) + THIN + 2;
+    const W = w + 2 * m, H = h + 2 * m, ink = new Uint8Array(W * H);
+    for (let y = 0; y < h; y++) ink.set(ink0.subarray(y * w, (y + 1) * w), (y + m) * W + m);
 
     const minArea = Math.max(30, Math.round(w * h * 0.002));
-    let gap = opt.gap, res;
+    const picked = [];   // { res, id }
+    let gap = opt.gap;
     if (gap == null) {
-      // 自動：ぬれた面積がほぼ最大になる、いちばん小さいつなぎ幅
-      const tries = GAPS.map(g => shapesAt(ink, w, h, g, minArea));
+      /* 自動：形ごとに、ほぼ全体がぬれる いちばん小さいつなぎ幅をえらぶ。
+         まず面積が最大になる幅での領域を「形の候補」とし、候補ごとに小さい幅から調べる。 */
+      const tries = GAPS.map(g => shapesAt(ink, W, H, g, minArea, m));
       const max = Math.max(...tries.map(t => t.area));
-      const i = tries.findIndex(t => t.area >= max * 0.85);
-      gap = GAPS[i]; res = tries[i];
+      const ref = tries.find(t => t.area >= max * 0.98);
+      gap = 0;
+      for (const region of ref.keep) {
+        for (const t of tries) {
+          const ids = t.keep.filter(id => ref.labels[t.stats[id].start] === region);
+          const area = ids.reduce((sum, id) => sum + t.stats[id].area, 0);
+          if (area >= ref.stats[region].area * 0.85 || t === ref) {
+            for (const id of ids) picked.push({ res: t, id });
+            gap = Math.max(gap, t.gap);
+            break;
+          }
+        }
+      }
     } else {
-      res = shapesAt(ink, w, h, gap, minArea);
+      const res = shapesAt(ink, W, H, gap, minArea, m);
+      for (const id of res.keep) picked.push({ res, id });
     }
-    const contours = res.keep.map(id => traceBoundary(res.labels, w, h, id, res.stats[id].start));
+    const contours = picked.map(({ res, id }) =>
+      traceBoundary(res.labels, W, H, id, res.stats[id].start).map(p => ({ x: p.x - m, y: p.y - m })));
     return { contours, gap };
   }
 
-  const Trace = { adaptiveInk, detect };
+  const Trace = { adaptiveInk, suggestThreshold, detect };
   if (typeof module !== 'undefined' && module.exports) module.exports = Trace;
   else root.Trace = Trace;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

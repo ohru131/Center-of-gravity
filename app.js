@@ -401,7 +401,7 @@
   const IMG_MAX = 640;   // 表示・処理する画像の長辺（画素）
   const CROP_MIN = 24;   // 切りぬきわくの最小サイズ（表示画素）
   // crop・contours は表示用キャンバスの座標。gray は切りぬいた範囲を元画像から取りなおしたもの
-  const photo = { el: null, src: null, w: 0, h: 0, crop: null, gray: null, gw: 0, gh: 0, contours: [], gapTouched: false, drag: null };
+  const photo = { el: null, src: null, w: 0, h: 0, crop: null, gray: null, gw: 0, gh: 0, contours: [], gapTouched: false, threshTouched: false, drag: null };
   const isImageFile = f => (/^image\//.test(f.type) && !/svg/.test(f.type)) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
 
   function loadImageEl(file) {
@@ -434,9 +434,8 @@
     const w = Math.max(1, Math.round(el.naturalWidth * s)), h = Math.max(1, Math.round(el.naturalHeight * s));
     Object.assign(photo, {
       el, w, h, src: drawScaled(el, 0, 0, el.naturalWidth, el.naturalHeight, w, h),
-      crop: { x: 0, y: 0, w, h }, gray: null, gapTouched: false, drag: null,
+      crop: { x: 0, y: 0, w, h }, gray: null, gapTouched: false, threshTouched: false, drag: null,
     });
-    $('imgThresh').value = 32;
     $('imgCanvas').width = w; $('imgCanvas').height = h;
     detectPhoto();
     $('imgDlg').showModal();
@@ -455,6 +454,8 @@
 
   function detectPhoto() {
     if (!photo.gray) cropGray();
+    // 感度は、さわるまでは画像のざらつきから自動で決める
+    if (!photo.threshTouched) $('imgThresh').value = Math.round(47 - 100 * Trace.suggestThreshold(photo.gray, photo.gw, photo.gh));
     const t = (47 - parseFloat($('imgThresh').value)) / 100, c = photo.crop;
     const res = Trace.detect(photo.gray, photo.gw, photo.gh, { t, gap: photo.gapTouched ? parseInt($('imgGap').value, 10) : null });
     if (!photo.gapTouched) $('imgGap').value = res.gap;
@@ -558,7 +559,7 @@
     detectPhoto();
   });
 
-  $('imgThresh').addEventListener('input', detectPhoto);
+  $('imgThresh').addEventListener('input', () => { photo.threshTouched = true; detectPhoto(); });
   $('imgGap').addEventListener('input', () => { photo.gapTouched = true; detectPhoto(); });
   $('imgCancel').addEventListener('click', () => $('imgDlg').close());
   $('imgOk').addEventListener('click', () => {
