@@ -398,8 +398,10 @@
 
   /* ---------- 写真・画像から形をとりだす ---------- */
 
-  const IMG_MAX = 640;   // 処理する画像の長辺（画素）
-  const photo = { src: null, gray: null, w: 0, h: 0, contours: [], gapTouched: false };
+  const IMG_MAX = 640;   // 表示・処理する画像の長辺（画素）
+  const CROP_MIN = 24;   // 切りぬきわくの最小サイズ（表示画素）
+  // crop・contours は表示用キャンバスの座標。gray は切りぬいた範囲を元画像から取りなおしたもの
+  const photo = { el: null, src: null, w: 0, h: 0, crop: null, gray: null, gw: 0, gh: 0, contours: [], gapTouched: false, drag: null };
   const isImageFile = f => (/^image\//.test(f.type) && !/svg/.test(f.type)) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
 
   function loadImageEl(file) {
@@ -411,6 +413,17 @@
     });
   }
 
+  // 元画像の (sx,sy,sw,sh) を w×h のキャンバスにかく（すきとおった所は白い紙あつかい）
+  function drawScaled(el, sx, sy, sw, sh, w, h) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(el, sx, sy, sw, sh, 0, 0, w, h);
+    return c;
+  }
+
   async function openImage(file) {
     let el;
     try { el = await loadImageEl(file); } catch (e) {
@@ -419,41 +432,131 @@
     }
     const s = Math.min(1, IMG_MAX / Math.max(el.naturalWidth, el.naturalHeight));
     const w = Math.max(1, Math.round(el.naturalWidth * s)), h = Math.max(1, Math.round(el.naturalHeight * s));
-    const src = document.createElement('canvas');
-    src.width = w; src.height = h;
-    const ctx = src.getContext('2d', { willReadFrequently: true });
-    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);   // すきとおった画像は白い紙あつかい
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(el, 0, 0, w, h);
-    const d = ctx.getImageData(0, 0, w, h).data, gray = new Uint8Array(w * h);
-    for (let i = 0; i < w * h; i++) gray[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
-    Object.assign(photo, { src, gray, w, h, gapTouched: false });
+    Object.assign(photo, {
+      el, w, h, src: drawScaled(el, 0, 0, el.naturalWidth, el.naturalHeight, w, h),
+      crop: { x: 0, y: 0, w, h }, gray: null, gapTouched: false, drag: null,
+    });
     $('imgThresh').value = 32;
     $('imgCanvas').width = w; $('imgCanvas').height = h;
     detectPhoto();
     $('imgDlg').showModal();
   }
 
+  // 切りぬいた範囲を元画像から取りなおして明るさの配列にする（小さく切りぬくほど細かく見られる）
+  function cropGray() {
+    const c = photo.crop, k = photo.el.naturalWidth / photo.w;
+    const s = Math.min(1, IMG_MAX / (Math.max(c.w, c.h) * k));
+    const gw = Math.max(1, Math.round(c.w * k * s)), gh = Math.max(1, Math.round(c.h * k * s));
+    const d = drawScaled(photo.el, c.x * k, c.y * k, c.w * k, c.h * k, gw, gh).getContext('2d').getImageData(0, 0, gw, gh).data;
+    const gray = new Uint8Array(gw * gh);
+    for (let i = 0; i < gw * gh; i++) gray[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+    Object.assign(photo, { gray, gw, gh });
+  }
+
   function detectPhoto() {
-    const t = (47 - parseFloat($('imgThresh').value)) / 100;
-    const res = Trace.detect(photo.gray, photo.w, photo.h, { t, gap: photo.gapTouched ? parseInt($('imgGap').value, 10) : null });
+    if (!photo.gray) cropGray();
+    const t = (47 - parseFloat($('imgThresh').value)) / 100, c = photo.crop;
+    const res = Trace.detect(photo.gray, photo.gw, photo.gh, { t, gap: photo.gapTouched ? parseInt($('imgGap').value, 10) : null });
     if (!photo.gapTouched) $('imgGap').value = res.gap;
-    photo.contours = res.contours;
-    const ctx = $('imgCanvas').getContext('2d');
-    ctx.drawImage(photo.src, 0, 0);
-    ctx.beginPath();
-    for (const c of res.contours) {
-      c.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
-      ctx.closePath();
-    }
-    ctx.fillStyle = 'rgba(255, 170, 0, .45)'; ctx.fill();
-    ctx.lineWidth = Math.max(2, photo.w / 200); ctx.strokeStyle = '#e02020'; ctx.stroke();
-    const n = res.contours.length;
+    const kx = c.w / photo.gw, ky = c.h / photo.gh;
+    photo.contours = res.contours.map(pts => pts.map(p => ({ x: c.x + p.x * kx, y: c.y + p.y * ky })));
+    const n = photo.contours.length;
     $('imgInfo').textContent = n
       ? `形が ${n} こ見つかったよ！（オレンジのところ）`
-      : '形が見つからない…。下のつまみを動かすか、とりなおしてね。';
+      : '形が見つからない…。わくやつまみを動かすか、とりなおしてね。';
     $('imgOk').disabled = !n;
+    drawPhoto(true);
   }
+
+  function drawPhoto(withShapes) {
+    const ctx = $('imgCanvas').getContext('2d'), c = photo.crop, W = photo.w, H = photo.h;
+    const u = Math.max(1, W / 320);   // 線の太さの単位
+    ctx.drawImage(photo.src, 0, 0);
+    if (withShapes) {
+      ctx.beginPath();
+      for (const pts of photo.contours) {
+        pts.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+        ctx.closePath();
+      }
+      ctx.fillStyle = 'rgba(255, 170, 0, .45)'; ctx.fill();
+      ctx.lineWidth = 1.5 * u; ctx.strokeStyle = '#e02020'; ctx.stroke();
+    }
+    // わくの外を暗くする
+    ctx.fillStyle = 'rgba(0, 20, 50, .55)';
+    ctx.fillRect(0, 0, W, c.y); ctx.fillRect(0, c.y + c.h, W, H - c.y - c.h);
+    ctx.fillRect(0, c.y, c.x, c.h); ctx.fillRect(c.x + c.w, c.y, W - c.x - c.w, c.h);
+    ctx.lineWidth = u; ctx.strokeStyle = '#fff';
+    ctx.strokeRect(c.x, c.y, c.w, c.h);
+    // かどのつまみ
+    const L = Math.min(14 * u, c.w / 3, c.h / 3);
+    ctx.lineWidth = 3 * u; ctx.strokeStyle = '#2b7de9'; ctx.lineCap = 'square';
+    ctx.beginPath();
+    for (const [x, y, dx, dy] of [[c.x, c.y, 1, 1], [c.x + c.w, c.y, -1, 1], [c.x, c.y + c.h, 1, -1], [c.x + c.w, c.y + c.h, -1, -1]]) {
+      ctx.moveTo(x + dx * L, y); ctx.lineTo(x, y); ctx.lineTo(x, y + dy * L);
+    }
+    ctx.stroke();
+  }
+
+  /* 切りぬきわくの操作：かど = 大きさ変更、わくの中 = 移動、わくの外 = かきなおし */
+  function canvasPoint(e) {
+    const r = $('imgCanvas').getBoundingClientRect(), k = photo.w / r.width;
+    return {
+      x: Math.min(photo.w, Math.max(0, (e.clientX - r.left) * k)),
+      y: Math.min(photo.h, Math.max(0, (e.clientY - r.top) * k)),
+      hit: 26 * k,   // つまみの当たり判定（画面上で約26px）
+    };
+  }
+  const rectFrom = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
+
+  $('imgWrap').addEventListener('pointerdown', e => {
+    if (e.button > 0 || photo.drag) return;
+    e.preventDefault();
+    $('imgWrap').setPointerCapture(e.pointerId);
+    const p = canvasPoint(e), c = photo.crop, prev = { ...c };
+    const xs = [c.x, c.x + c.w], ys = [c.y, c.y + c.h];
+    let drag = null, best = p.hit;
+    for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) {
+      const d = Math.hypot(p.x - xs[i], p.y - ys[j]);
+      if (d < best) { best = d; drag = { anchor: { x: xs[1 - i], y: ys[1 - j] } }; }  // 反対のかどを固定
+    }
+    if (!drag) {
+      const inside = p.x > c.x && p.x < c.x + c.w && p.y > c.y && p.y < c.y + c.h;
+      drag = inside ? { move: { dx: p.x - c.x, dy: p.y - c.y } } : { anchor: { x: p.x, y: p.y } };
+    }
+    drag.prev = prev;
+    photo.drag = drag;
+  });
+
+  $('imgWrap').addEventListener('pointermove', e => {
+    const d = photo.drag;
+    if (!d) return;
+    const p = canvasPoint(e), c = photo.crop;
+    if (d.move) {
+      c.x = Math.min(photo.w - c.w, Math.max(0, p.x - d.move.dx));
+      c.y = Math.min(photo.h - c.h, Math.max(0, p.y - d.move.dy));
+    } else {
+      photo.crop = rectFrom(d.anchor, p);
+    }
+    drawPhoto(false);
+  });
+
+  function endCropDrag() {
+    const d = photo.drag;
+    if (!d) return;
+    photo.drag = null;
+    const c = photo.crop;
+    if (c.w < CROP_MIN || c.h < CROP_MIN) photo.crop = d.prev;   // 小さすぎるわくは取り消し
+    else photo.crop = { x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.w), h: Math.round(c.h) };
+    photo.gray = null;
+    detectPhoto();
+  }
+  $('imgWrap').addEventListener('pointerup', endCropDrag);
+  $('imgWrap').addEventListener('pointercancel', endCropDrag);
+  $('imgCropReset').addEventListener('click', () => {
+    photo.crop = { x: 0, y: 0, w: photo.w, h: photo.h };
+    photo.gray = null;
+    detectPhoto();
+  });
 
   $('imgThresh').addEventListener('input', detectPhoto);
   $('imgGap').addEventListener('input', () => { photo.gapTouched = true; detectPhoto(); });

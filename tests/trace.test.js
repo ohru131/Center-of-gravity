@@ -59,3 +59,10 @@ test('ぬりつぶした形・複数の形・ふちにかかるかげ', () => {
 test('何もない紙 → 輪郭なし', () => {
   assert.strictEqual(Trace.detect(canvas(200, 150), 200, 150).contours.length, 0);
 });
+
+test('とじていない線（半円）は形にしない', () => {
+  const w = 300, h = 240, g = canvas(w, h);
+  ring(g, w, 150, 120, 70, 4, 60, a => a > Math.PI);
+  assert.strictEqual(Trace.detect(g, w, h).contours.length, 0);
+  assert.strictEqual(Trace.detect(g, w, h, { gap: 2 }).contours.length, 0);
+});

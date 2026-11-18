@@ -111,7 +111,7 @@
         <li>SVGは mm 単位。<span style="color:#e00">赤 = 切断</span>、<span style="color:#00c">青 = けがき</span>、線幅 0.1 mm。加工機ソフト側で色ごとに出力設定。</li>
         <li>あなの直径はレーザの焼きしろ（カーフ）ぶん大きく仕上がる。きつめにしたい場合は「じぶんで決める」で 0.1〜0.2 mm 小さく。</li>
         <li>読みこみ：SVG（path / polygon / rect / circle / ellipse）、DXF（LWPOLYLINE / POLYLINE / CIRCLE / LINE・ARCの連結）。内側の輪郭は「あな」として計算。はなれた形が複数あれば、それぞれの重心にしるし。</li>
-        <li>写真・画像（PNG / JPEG など）：白い紙にこい線でかき、紙だけが大きくうつるように撮影。二値化 → かすれ・とぎれをつなぐ → 線の内側を形として輪郭化。線が画面のふちにかかる形は読みこめない。寸法情報がないので「大きさ」で指定。</li>
+        <li>写真・画像（PNG / JPEG など）：白い紙にこい線でかき、紙だけが大きくうつるように撮影。二値化 → かすれ・とぎれをつなぐ → 線の内側を形として輪郭化。線が画面のふちにかかる形は読みこめない。確認画面でトリミング可（机・かげ・不要な線を外す。切りぬいた範囲を高解像度で再処理）。寸法情報がないので「大きさ」で指定。</li>
         <li>データは端末内だけで処理。送信なし。</li>
       </ul>
     </details>
@@ -120,7 +120,8 @@
 
 <dialog id="imgDlg">
   <h2>しゃしんから形をとりだす</h2>
-  <canvas id="imgCanvas"></canvas>
+  <p class="hint">✂ 白いわくの<b>かど</b>をひっぱって、形のまわりだけを切りぬこう。（わくの中をひっぱると移動）</p>
+  <div id="imgWrap"><canvas id="imgCanvas"></canvas></div>
   <p id="imgInfo" role="status"></p>
   <div class="field">
     <label for="imgThresh">線のひろいやすさ（うすい線・かすれは右へ）</label>
@@ -132,6 +133,7 @@
   </div>
   <div class="row">
     <button id="imgOk" class="btn primary">この形でOK</button>
+    <button id="imgCropReset" class="btn">わくをもどす</button>
     <button id="imgCancel" class="btn">やめる</button>
   </div>
 </dialog>
