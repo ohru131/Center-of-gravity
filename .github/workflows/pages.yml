@@ -23,11 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Test
-        run: node --test tests/geometry.test.js
+        run: node --test tests/*.test.js
       - name: Collect site files
         run: |
           mkdir _site
-          cp index.html style.css app.js geometry.js .nojekyll _site/
+          cp index.html style.css app.js geometry.js trace.js .nojekyll _site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

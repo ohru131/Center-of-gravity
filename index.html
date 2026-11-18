@@ -34,12 +34,14 @@
   <section class="panel">
     <div class="step">
       <h2><span class="num">1</span>形をつくる</h2>
-      <p class="hint">ゆびやマウスで、<b>ひとふでがき</b>で形をかこう。はなすと自動でとじるよ。いくつかいてもOK。形の中にかくと、あなになるよ。</p>
+      <p class="hint">ゆびやマウスで、<b>ひとふでがき</b>で形をかこう。はなすと自動でとじるよ。いくつかいてもOK。形の中にかくと、あなになるよ。<br>紙にかいた絵を<b>カメラでとって</b>読みこむこともできるよ。</p>
       <div class="row">
         <button id="btnClear" class="btn">🧽 ぜんぶけす</button>
         <button id="btnUndo" class="btn" disabled>↩ ひとつもどす</button>
         <button id="btnFile" class="btn">📂 ファイルをよみこむ</button>
-        <input id="file" type="file" accept=".svg,.dxf,image/svg+xml" hidden>
+        <button id="btnCamera" class="btn">📷 カメラでとる</button>
+        <input id="file" type="file" accept=".svg,.dxf,image/*" hidden>
+        <input id="camera" type="file" accept="image/*" capture="environment" hidden>
       </div>
       <div class="row">
         <span class="label">みほん：</span>
@@ -109,14 +111,34 @@
         <li>SVGは mm 単位。<span style="color:#e00">赤 = 切断</span>、<span style="color:#00c">青 = けがき</span>、線幅 0.1 mm。加工機ソフト側で色ごとに出力設定。</li>
         <li>あなの直径はレーザの焼きしろ（カーフ）ぶん大きく仕上がる。きつめにしたい場合は「じぶんで決める」で 0.1〜0.2 mm 小さく。</li>
         <li>読みこみ：SVG（path / polygon / rect / circle / ellipse）、DXF（LWPOLYLINE / POLYLINE / CIRCLE / LINE・ARCの連結）。内側の輪郭は「あな」として計算。はなれた形が複数あれば、それぞれの重心にしるし。</li>
+        <li>写真・画像（PNG / JPEG など）：白い紙にこい線でかき、紙だけが大きくうつるように撮影。二値化 → かすれ・とぎれをつなぐ → 線の内側を形として輪郭化。線が画面のふちにかかる形は読みこめない。寸法情報がないので「大きさ」で指定。</li>
         <li>データは端末内だけで処理。送信なし。</li>
       </ul>
     </details>
   </section>
 </main>
 
+<dialog id="imgDlg">
+  <h2>しゃしんから形をとりだす</h2>
+  <canvas id="imgCanvas"></canvas>
+  <p id="imgInfo" role="status"></p>
+  <div class="field">
+    <label for="imgThresh">線のひろいやすさ（うすい線・かすれは右へ）</label>
+    <input id="imgThresh" type="range" min="5" max="42" step="1" value="32">
+  </div>
+  <div class="field">
+    <label for="imgGap">とぎれをつなぐ強さ（とじないときは右へ）</label>
+    <input id="imgGap" type="range" min="0" max="20" step="1" value="0">
+  </div>
+  <div class="row">
+    <button id="imgOk" class="btn primary">この形でOK</button>
+    <button id="imgCancel" class="btn">やめる</button>
+  </div>
+</dialog>
+
 <div id="svgHost" aria-hidden="true"></div>
 <script src="geometry.js"></script>
+<script src="trace.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

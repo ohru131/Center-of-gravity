@@ -15,6 +15,7 @@
 
 - SVG：`path` / `polygon` / `polyline` / `rect` / `circle` / `ellipse`（transform 対応、`use` は非対応）
 - DXF：`LWPOLYLINE`（bulge 対応）/ `POLYLINE` / `CIRCLE` / `LINE`・`ARC` の連結（`SPLINE`・`ELLIPSE` は非対応）
+- 写真・画像（PNG / JPEG など、スマホはカメラ撮影可）：適応的二値化 → かすれ・微小なとぎれを連結 → 線の内側をぬりつぶして輪郭化。確認画面で感度とつなぐ強さを調整
 - 内側の輪郭は穴として計算。閉じた図形が複数あれば、図形ごとに重心を計算してしるしを付ける
 
 ## 出力SVG
@@ -29,5 +30,5 @@
 ## テスト
 
 ```
-node --test tests/geometry.test.js
+node --test tests/*.test.js
 ```
