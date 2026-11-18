@@ -355,6 +355,7 @@
   }
 
   async function loadFile(file) {
+    if (isImageFile(file)) return openImage(file);
     try {
       const text = await file.text();
       const isDxf = /\.dxf$/i.test(file.name);
@@ -380,6 +381,11 @@
   }
 
   $('btnFile').addEventListener('click', () => $('file').click());
+  $('btnCamera').addEventListener('click', () => $('camera').click());
+  $('camera').addEventListener('change', e => {
+    if (e.target.files[0]) loadFile(e.target.files[0]);
+    e.target.value = '';
+  });
   $('file').addEventListener('change', e => {
     if (e.target.files[0]) loadFile(e.target.files[0]);
     e.target.value = '';
@@ -388,6 +394,80 @@
   stage.addEventListener('drop', e => {
     e.preventDefault();
     if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0]);
+  });
+
+  /* ---------- 写真・画像から形をとりだす ---------- */
+
+  const IMG_MAX = 640;   // 処理する画像の長辺（画素）
+  const photo = { src: null, gray: null, w: 0, h: 0, contours: [], gapTouched: false };
+  const isImageFile = f => (/^image\//.test(f.type) && !/svg/.test(f.type)) || /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name);
+
+  function loadImageEl(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file), el = new Image();
+      el.onload = () => { URL.revokeObjectURL(url); resolve(el); };
+      el.onerror = () => { URL.revokeObjectURL(url); reject(new Error('decode')); };
+      el.src = url;
+    });
+  }
+
+  async function openImage(file) {
+    let el;
+    try { el = await loadImageEl(file); } catch (e) {
+      setMsg('この画像は読みこめなかったよ。JPEG か PNG でためしてね。', 'bad');
+      return;
+    }
+    const s = Math.min(1, IMG_MAX / Math.max(el.naturalWidth, el.naturalHeight));
+    const w = Math.max(1, Math.round(el.naturalWidth * s)), h = Math.max(1, Math.round(el.naturalHeight * s));
+    const src = document.createElement('canvas');
+    src.width = w; src.height = h;
+    const ctx = src.getContext('2d', { willReadFrequently: true });
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);   // すきとおった画像は白い紙あつかい
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(el, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data, gray = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) gray[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+    Object.assign(photo, { src, gray, w, h, gapTouched: false });
+    $('imgThresh').value = 32;
+    $('imgCanvas').width = w; $('imgCanvas').height = h;
+    detectPhoto();
+    $('imgDlg').showModal();
+  }
+
+  function detectPhoto() {
+    const t = (47 - parseFloat($('imgThresh').value)) / 100;
+    const res = Trace.detect(photo.gray, photo.w, photo.h, { t, gap: photo.gapTouched ? parseInt($('imgGap').value, 10) : null });
+    if (!photo.gapTouched) $('imgGap').value = res.gap;
+    photo.contours = res.contours;
+    const ctx = $('imgCanvas').getContext('2d');
+    ctx.drawImage(photo.src, 0, 0);
+    ctx.beginPath();
+    for (const c of res.contours) {
+      c.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.closePath();
+    }
+    ctx.fillStyle = 'rgba(255, 170, 0, .45)'; ctx.fill();
+    ctx.lineWidth = Math.max(2, photo.w / 200); ctx.strokeStyle = '#e02020'; ctx.stroke();
+    const n = res.contours.length;
+    $('imgInfo').textContent = n
+      ? `形が ${n} こ見つかったよ！（オレンジのところ）`
+      : '形が見つからない…。下のつまみを動かすか、とりなおしてね。';
+    $('imgOk').disabled = !n;
+  }
+
+  $('imgThresh').addEventListener('input', detectPhoto);
+  $('imgGap').addEventListener('input', () => { photo.gapTouched = true; detectPhoto(); });
+  $('imgCancel').addEventListener('click', () => $('imgDlg').close());
+  $('imgOk').addEventListener('click', () => {
+    $('imgDlg').close();
+    const n = photo.contours.length;
+    // 手がきと同じあつかい（ぎざぎざを取り、なめらかに）
+    state.raw = fitToView(photo.contours).map(pts => ({ pts, drawn: true }));
+    state.revealed = false; state.guesses = [];
+    rebuild();
+    if (state.res && !state.crossing) {
+      setMsg('しゃしんから形をとりだしたよ！' + (n > 1 ? ` 形が ${n} こあるね。それぞれの` : ' ') + '重心はどこかな？ タップしてよそうしよう。');
+    }
   });
 
   /* ---------- こたえ・回転 ---------- */
