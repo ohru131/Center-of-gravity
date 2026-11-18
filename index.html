@@ -22,20 +22,10 @@
       </defs>
       <rect width="200" height="200" fill="#fff"/>
       <rect width="200" height="200" fill="url(#grid)"/>
-      <g id="shapeG">
-        <path id="shape" fill-rule="evenodd"/>
-        <g id="answer" hidden>
-          <circle id="hole"/>
-          <path id="cross"/>
-        </g>
-        <g id="guess" hidden>
-          <circle id="guessDot" r="2.2"/>
-          <text id="guessLabel" font-size="6">よそう</text>
-        </g>
-      </g>
+      <g id="shapeG"></g>
       <polyline id="live"/>
       <line id="closer"/>
-      <circle id="pivot" r="1.2" hidden/>
+      <g id="pivots"></g>
     </svg>
     <p id="gridNote">1マス = 10 mm</p>
     <div id="msg" role="status"></div>
@@ -44,9 +34,10 @@
   <section class="panel">
     <div class="step">
       <h2><span class="num">1</span>形をつくる</h2>
-      <p class="hint">ゆびやマウスで、<b>ひとふでがき</b>で形をかこう。はなすと自動でとじるよ。</p>
+      <p class="hint">ゆびやマウスで、<b>ひとふでがき</b>で形をかこう。はなすと自動でとじるよ。いくつかいてもOK。形の中にかくと、あなになるよ。</p>
       <div class="row">
-        <button id="btnClear" class="btn">🧽 けす</button>
+        <button id="btnClear" class="btn">🧽 ぜんぶけす</button>
+        <button id="btnUndo" class="btn" disabled>↩ ひとつもどす</button>
         <button id="btnFile" class="btn">📂 ファイルをよみこむ</button>
         <input id="file" type="file" accept=".svg,.dxf,image/svg+xml" hidden>
       </div>
@@ -78,7 +69,7 @@
     <div class="step">
       <h2><span class="num">4</span>コマにする</h2>
       <div class="field">
-        <label for="size">大きさ（いちばん長いところ）</label>
+        <label for="size">大きさ（ぜんたいのいちばん長いところ）</label>
         <div class="row">
           <input id="size" type="range" min="20" max="200" step="1" value="60">
           <input id="sizeNum" type="number" min="10" max="500" step="1" value="60"> mm
@@ -117,7 +108,7 @@
         <li>重心は「あつさと材質が一様な板」として計算（面積重心）。</li>
         <li>SVGは mm 単位。<span style="color:#e00">赤 = 切断</span>、<span style="color:#00c">青 = けがき</span>、線幅 0.1 mm。加工機ソフト側で色ごとに出力設定。</li>
         <li>あなの直径はレーザの焼きしろ（カーフ）ぶん大きく仕上がる。きつめにしたい場合は「じぶんで決める」で 0.1〜0.2 mm 小さく。</li>
-        <li>読みこみ：SVG（path / polygon / rect / circle / ellipse）、DXF（LWPOLYLINE / POLYLINE / CIRCLE / LINE・ARCの連結）。内側の輪郭は「あな」として計算。</li>
+        <li>読みこみ：SVG（path / polygon / rect / circle / ellipse）、DXF（LWPOLYLINE / POLYLINE / CIRCLE / LINE・ARCの連結）。内側の輪郭は「あな」として計算。はなれた形が複数あれば、それぞれの重心にしるし。</li>
         <li>データは端末内だけで処理。送信なし。</li>
       </ul>
     </details>
