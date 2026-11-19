@@ -85,3 +85,46 @@ test('感度の目安：きれいな背景は高感度、ざらついた写真�
   assert.ok(Trace.suggestThreshold(clean, w, h) <= 0.05);
   assert.ok(Trace.suggestThreshold(noisy, w, h) >= 0.1);
 });
+
+// カラー写真ふう：むらのある木目調の背景に、色のついた物体
+function colorScene(w, h, paint) {
+  const d = new Uint8ClampedArray(w * h * 4);
+  let seed = 7; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const i = (y * w + x) * 4, shade = 1 - 0.3 * (x + y) / (w + h), grain = 6 * Math.sin(y * 0.9) + (rnd() - 0.5) * 14;
+    let c = [190 * shade + grain, 150 * shade + grain, 105 * shade + grain];
+    c = paint(x, y, c) || c;
+    d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+  }
+  return d;
+}
+
+test('カラー写真：背景とちがう色の物体を切り出す（かげ・ハイライト・中の白い部分つき）', () => {
+  const w = 320, h = 240;
+  const rgba = colorScene(w, h, (x, y, bg) => {
+    const dx = x - 100, dy = y - 120;
+    if (dx * dx + dy * dy < 55 * 55) {
+      if (dx * dx + dy * dy < 15 * 15) return [235, 235, 230];          // 物体の中の白いラベル
+      const hl = Math.max(0, 60 - Math.hypot(dx + 20, dy + 20) * 2);    // ハイライト
+      return [200 + hl / 2, 40 + hl, 40 + hl];
+    }
+    if (x >= 200 && x < 280 && y >= 80 && y < 170) return [40, 90, 180]; // 青い四角
+    const sx = x - 112, sy = y - 132;                                    // 赤い円のうすいかげ
+    if (sx * sx + sy * sy < 55 * 55) return bg.map(v => v * 0.86);
+  });
+  const { contours, fill } = Trace.detectObject(rgba, w, h);
+  assert.strictEqual(contours.length, 2);
+  const areas = contours.map(areaOf).sort((a, b) => a - b);
+  near(areas[0], 80 * 90, 500);
+  near(areas[1], Math.PI * 55 * 55, 900);
+  assert.ok(fill > 0.8, '中まで色のある物体は fill が大きい');
+});
+
+test('カラー写真：物体なし → 輪郭なし / 線画は fill が小さい', () => {
+  const w = 240, h = 180;
+  assert.strictEqual(Trace.detectObject(colorScene(w, h, () => null), w, h).contours.length, 0);
+  const line = colorScene(w, h, (x, y) => Math.abs(Math.hypot(x - 120, y - 90) - 60) < 2 ? [30, 30, 40] : null);
+  const r = Trace.detectObject(line, w, h);
+  assert.strictEqual(r.contours.length, 1);
+  assert.ok(r.fill < 0.3);
+});

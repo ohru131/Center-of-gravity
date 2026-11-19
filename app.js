@@ -434,9 +434,10 @@
     const w = Math.max(1, Math.round(el.naturalWidth * s)), h = Math.max(1, Math.round(el.naturalHeight * s));
     Object.assign(photo, {
       el, w, h, src: drawScaled(el, 0, 0, el.naturalWidth, el.naturalHeight, w, h),
-      crop: { x: 0, y: 0, w, h }, gray: null, gapTouched: false, threshTouched: false, drag: null,
+      crop: { x: 0, y: 0, w, h }, gray: null, gapTouched: false, threshTouched: false, autoMode: null, drag: null,
     });
     $('imgCanvas').width = w; $('imgCanvas').height = h;
+    $('imgMode').value = 'auto';
     detectPhoto();
     $('imgDlg').showModal();
   }
@@ -449,21 +450,42 @@
     const d = drawScaled(photo.el, c.x * k, c.y * k, c.w * k, c.h * k, gw, gh).getContext('2d').getImageData(0, 0, gw, gh).data;
     const gray = new Uint8Array(gw * gh);
     for (let i = 0; i < gw * gh; i++) gray[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
-    Object.assign(photo, { gray, gw, gh });
+    Object.assign(photo, { gray, rgba: d, gw, gh });
   }
 
   function detectPhoto() {
     if (!photo.gray) cropGray();
-    // 感度は、さわるまでは画像のざらつきから自動で決める
-    if (!photo.threshTouched) $('imgThresh').value = Math.round(47 - 100 * Trace.suggestThreshold(photo.gray, photo.gw, photo.gh));
-    const t = (47 - parseFloat($('imgThresh').value)) / 100, c = photo.crop;
-    const res = Trace.detect(photo.gray, photo.gw, photo.gh, { t, gap: photo.gapTouched ? parseInt($('imgGap').value, 10) : null });
+    const c = photo.crop, gap = photo.gapTouched ? parseInt($('imgGap').value, 10) : null;
+    const slider = () => parseFloat($('imgThresh').value);
+    // 物の写真：色で背景と分ける。つまみのまん中(25) = 自動、右ほど背景に近い色もひろう
+    const asObject = () => {
+      if (!photo.threshTouched) $('imgThresh').value = 25;
+      return Trace.detectObject(photo.rgba, photo.gw, photo.gh, { sens: Math.pow(2, (slider() - 25) / 10), gap });
+    };
+    // 線の絵：まわりより暗い線をひろう。感度は、さわるまでは画像のざらつきから自動で決める
+    const asLine = () => {
+      if (!photo.threshTouched) $('imgThresh').value = Math.round(47 - 100 * Trace.suggestThreshold(photo.gray, photo.gw, photo.gh));
+      return Trace.detect(photo.gray, photo.gw, photo.gh, { t: (47 - slider()) / 100, gap });
+    };
+    let mode = $('imgMode').value, res;
+    if (mode === 'auto') {
+      // じどう：両方ためす。色で分けて中まで色のある形が取れ、線として取るより小さくなければ「物」
+      mode = photo.autoMode;
+      if (!mode) {
+        const obj = asObject(), line = asLine();
+        mode = obj.contours.length && obj.fill >= 0.5 && obj.area >= line.area * 0.5 ? 'object' : 'line';
+        res = mode === 'object' ? asObject() : line;   // つまみの初期値をモードに合わせなおす
+        photo.autoMode = mode;
+      }
+    }
+    if (!res) res = mode === 'object' ? asObject() : asLine();
+    photo.mode = mode;
     if (!photo.gapTouched) $('imgGap').value = res.gap;
     const kx = c.w / photo.gw, ky = c.h / photo.gh;
     photo.contours = res.contours.map(pts => pts.map(p => ({ x: c.x + p.x * kx, y: c.y + p.y * ky })));
     const n = photo.contours.length;
     $('imgInfo').textContent = n
-      ? `形が ${n} こ見つかったよ！（オレンジのところ）`
+      ? `${photo.mode === 'object' ? '物' : '線の絵'}として、形が ${n} こ見つかったよ！（オレンジのところ）`
       : '形が見つからない…。わくやつまみを動かすか、とりなおしてね。';
     $('imgOk').disabled = !n;
     drawPhoto(true);
@@ -549,6 +571,7 @@
     if (c.w < CROP_MIN || c.h < CROP_MIN) photo.crop = d.prev;   // 小さすぎるわくは取り消し
     else photo.crop = { x: Math.round(c.x), y: Math.round(c.y), w: Math.round(c.w), h: Math.round(c.h) };
     photo.gray = null;
+    if (!photo.threshTouched) photo.autoMode = null;
     detectPhoto();
   }
   $('imgWrap').addEventListener('pointerup', endCropDrag);
@@ -556,10 +579,15 @@
   $('imgCropReset').addEventListener('click', () => {
     photo.crop = { x: 0, y: 0, w: photo.w, h: photo.h };
     photo.gray = null;
+    if (!photo.threshTouched) photo.autoMode = null;
     detectPhoto();
   });
 
   $('imgThresh').addEventListener('input', () => { photo.threshTouched = true; detectPhoto(); });
+  $('imgMode').addEventListener('change', () => {
+    Object.assign(photo, { threshTouched: false, gapTouched: false, autoMode: null });
+    detectPhoto();
+  });
   $('imgGap').addEventListener('input', () => { photo.gapTouched = true; detectPhoto(); });
   $('imgCancel').addEventListener('click', () => $('imgDlg').close());
   $('imgOk').addEventListener('click', () => {
