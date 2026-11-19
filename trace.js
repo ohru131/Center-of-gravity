@@ -153,11 +153,121 @@
     return Math.min(0.15, 0.03 + med * 0.02);
   }
 
-  /* gray: Uint8Array(w*h) の明るさ。opt.t: 二値化の強さ(0〜1)、opt.gap: つなぐ幅(px, 省略で自動)
-     戻り値 { contours: [[{x,y}…]…], gap } */
+  /* 線画むけ。gray: Uint8Array(w*h) の明るさ。opt.t: 二値化の強さ(0〜1)、opt.gap: つなぐ幅(px, 省略で自動)
+     戻り値 { contours: [[{x,y}…]…], gap, fill } */
   function detect(gray, w, h, opt) {
     opt = opt || {};
-    const ink0 = adaptiveInk(gray, w, h, opt.t == null ? 0.15 : opt.t);
+    return shapesFromInk(adaptiveInk(gray, w, h, opt.t == null ? 0.15 : opt.t), w, h, opt);
+  }
+
+  /* ---------- カラー写真の物体（背景とちがう色のかたまり）---------- */
+
+  // 色の特徴量（明るさ L と色み 2 成分）を 3x3 でならして返す。かげに強くするため L は軽くあつかう
+  const L_WEIGHT = 0.6;
+  function colorFeatures(rgba, w, h) {
+    const n = w * h, raw = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+    for (let i = 0; i < n; i++) {
+      const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+      raw[0][i] = L_WEIGHT * (r + g + b) / 3; raw[1][i] = r - g; raw[2][i] = (r + g) / 2 - b;
+    }
+    return raw.map(src => {
+      const tmp = new Float32Array(n), out = new Float32Array(n);
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        tmp[i] = (src[x > 0 ? i - 1 : i] + src[i] + src[x < w - 1 ? i + 1 : i]) / 3;
+      }
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        out[i] = (tmp[y > 0 ? i - w : i] + tmp[i] + tmp[y < h - 1 ? i + w : i]) / 3;
+      }
+      return out;
+    });
+  }
+
+  // 画像のふちの帯から背景の代表色を k 個もとめる（k-means）
+  function borderColors(f, w, h, k) {
+    const band = Math.max(2, Math.round(Math.min(w, h) * 0.03)), samples = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (x >= band && x < w - band && y >= band && y < h - band) { x = w - band - 1; continue; }
+      if ((x + y) % 2 === 0) samples.push(y * w + x);
+    }
+    let centers = [];
+    for (let j = 0; j < k; j++) { const i = samples[Math.floor((j + 0.5) * samples.length / k)]; centers.push([f[0][i], f[1][i], f[2][i]]); }
+    for (let iter = 0; iter < 8; iter++) {
+      const sum = centers.map(() => [0, 0, 0, 0]);
+      for (const i of samples) {
+        let best = 0, bd = Infinity;
+        for (let j = 0; j < centers.length; j++) {
+          const c = centers[j], d = (f[0][i] - c[0]) ** 2 + (f[1][i] - c[1]) ** 2 + (f[2][i] - c[2]) ** 2;
+          if (d < bd) { bd = d; best = j; }
+        }
+        const s = sum[best]; s[0] += f[0][i]; s[1] += f[1][i]; s[2] += f[2][i]; s[3]++;
+      }
+      centers = sum.filter(s => s[3] > 0).map(s => [s[0] / s[3], s[1] / s[3], s[2] / s[3]]);
+    }
+    return centers;
+  }
+
+  /* 物体むけ。rgba: 画素データ(w*h*4)。opt.sens: 感度の倍率(1 = 自動、大きいほど背景に近い色もひろう)
+     1) 画像のふちの色を「背景」としておぼえる
+     2) 各画素の背景からの色のへだたりを出す。背景より暗いだけの所（かげ）は、へだたりを小さめに見る
+     3) しきい値 = ふちの画素じしんのばらつき（木目・ざらつき）の数倍。それをこえたら物体
+     4) 背景に近い色の画素から広げる。なだらかに変わる所（照明むら・うすいかげ）は少しゆるく通す
+     5) とどかなかった所 = 物体（物体の中の背景色の部分は、後段のぬりつぶしでうまる） */
+  const SHADOW = 0.3;    // 背景より暗い方向（明るさ半分まで）の明るさの差にかける重み
+  function objectInk(rgba, w, h, sens) {
+    const f = colorFeatures(rgba, w, h), centers = borderColors(f, w, h, 4), n = w * h;
+    const dist = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let bd = Infinity;
+      for (const c of centers) {
+        let dl = f[0][i] - c[0], k = 1;
+        // かげ = 背景と同じ色みのまま暗くなった所。暗さの比 k を色みにもかけてくらべる
+        if (dl < 0 && c[0] > 0) { k = f[0][i] / c[0]; if (k > 0.5) dl *= SHADOW; }
+        const d = dl * dl + (f[1][i] - k * c[1]) ** 2 + (f[2][i] - k * c[2]) ** 2;
+        if (d < bd) bd = d;
+      }
+      dist[i] = Math.sqrt(bd);
+    }
+    // ふちの帯でのへだたりの 95% 点 = 背景のばらつきの大きさ
+    const band = Math.max(2, Math.round(Math.min(w, h) * 0.03)), hist = new Int32Array(256);
+    let count = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      if (x >= band && x < w - band && y >= band && y < h - band) { x = w - band - 1; continue; }
+      hist[Math.min(255, Math.round(dist[y * w + x]))]++; count++;
+    }
+    let acc = 0, p95 = 0;
+    while (p95 < 255 && (acc += hist[p95]) < count * 0.95) p95++;
+    const T = Math.min(45, Math.max(9, 3 * p95)) / (sens || 1);
+    const loose = 2 * T, step2 = (0.15 * T) ** 2;
+    const seen = new Uint8Array(n), stack = [];
+    for (let p = 0; p < n; p++) if (dist[p] < T) { seen[p] = 1; stack.push(p); }
+    const visit = (p, q) => {
+      if (seen[q] || dist[q] >= loose) return;
+      const d = (f[0][p] - f[0][q]) ** 2 + (f[1][p] - f[1][q]) ** 2 + (f[2][p] - f[2][q]) ** 2;
+      if (d >= step2) return;
+      seen[q] = 1; stack.push(q);
+    };
+    while (stack.length) {
+      const p = stack.pop(), x = p % w;
+      if (x > 0) visit(p, p - 1);
+      if (x < w - 1) visit(p, p + 1);
+      if (p >= w) visit(p, p - w);
+      if (p < n - w) visit(p, p + w);
+    }
+    const ink = new Uint8Array(n);
+    for (let i = 0; i < n; i++) ink[i] = seen[i] ? 0 : 1;
+    return ink;
+  }
+
+  function detectObject(rgba, w, h, opt) {
+    opt = opt || {};
+    return shapesFromInk(objectInk(rgba, w, h, opt.sens), w, h, opt);
+  }
+
+  /* 共通の後段：線・物体の画素(ink0) → とぎれをつなぐ → 内側をぬる → 輪郭。
+     fill = 取れた形のうち ink0 がしめる割合（線画は小さく、中まで色のある物体は 1 に近い） */
+  function shapesFromInk(ink0, w, h, opt) {
     // ぽつんと離れた数画素のノイズを消す。かすれた線のかけらは、近くの線とまとめて数えるので残る
     const near = label(spread(ink0, w, h, 1, 1), w, h);
     const count = new Int32Array(near.stats.length);
@@ -196,10 +306,15 @@
     }
     const contours = picked.map(({ res, id }) =>
       traceBoundary(res.labels, W, H, id, res.stats[id].start).map(p => ({ x: p.x - m, y: p.y - m })));
-    return { contours, gap };
+    let inked = 0, total = 0;
+    for (const { res, id } of picked) {
+      total += res.stats[id].area;
+      for (let i = 0; i < W * H; i++) if (ink[i] && res.labels[i] === id) inked++;
+    }
+    return { contours, gap, area: total, fill: total ? inked / total : 0 };
   }
 
-  const Trace = { adaptiveInk, suggestThreshold, detect };
+  const Trace = { adaptiveInk, suggestThreshold, detect, detectObject };
   if (typeof module !== 'undefined' && module.exports) module.exports = Trace;
   else root.Trace = Trace;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
