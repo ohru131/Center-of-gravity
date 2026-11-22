@@ -684,11 +684,16 @@
   ['markMode', 'shaft', 'shaftCustom'].forEach(id => $(id).addEventListener('input', render));
 
   $('btnDownload').addEventListener('click', () => {
+    if ($('pdfTile').checked) {   // 複製：A4 に敷きつめたSVG
+      tiledSheet(opt => download(Nest.buildSVG(opt), 'image/svg+xml', 'koma-a4.svg'));
+      return;
+    }
     const r = state.res;
     const svg = Geo.buildSVG({
       shapes: r.shapes, bbox: r.bbox,
       mmPerUnit: mmPerUnit(), mark: $('markMode').value, holeDiameter: holeDiameter(),
     });
+    $('pdfInfo').textContent = '';
     download(svg, 'image/svg+xml', 'koma.svg');
   });
 
@@ -703,37 +708,48 @@
   /* ---------- PDF（A4）---------- */
 
   $('pdfTile').addEventListener('change', () => { $('pdfInfo').textContent = ''; render(); });
-  $('btnPdf').addEventListener('click', () => {
+  const sheetInfo = (text, bad) => { $('pdfInfo').textContent = text; $('pdfInfo').style.color = bad ? '#c0392b' : ''; };
+
+  // 用紙（A4）に置くための情報：mm 座標の形と、ならべられる範囲
+  function sheetBase() {
     const r = state.res, k = mmPerUnit(), M = Nest.MARGIN;
     const toMm = p => ({ x: (p.x - r.bbox.minX) * k, y: (p.y - r.bbox.minY) * k });
     const shapes = r.shapes.map(s => ({
       contours: s.contours.map(u => ({ pts: u.pts.map(toMm) })), centroid: toMm(s.centroid), inside: s.inside,
     }));
-    const W = Nest.A4.w - 2 * M, H = Nest.A4.h - 2 * M - Nest.FOOTER;   // ならべられる範囲
-    const opt = { shapes, mark: $('markMode').value, holeDiameter: holeDiameter() };
-    const info = (text, bad) => { $('pdfInfo').textContent = text; $('pdfInfo').style.color = bad ? '#c0392b' : ''; };
+    return {
+      W: Nest.A4.w - 2 * M, H: Nest.A4.h - 2 * M - Nest.FOOTER, M,
+      opt: { shapes, mark: $('markMode').value, holeDiameter: holeDiameter() },
+    };
+  }
 
-    if (!$('pdfTile').checked) {
-      if (r.bbox.w * k > W || r.bbox.h * k > H) { info(`A4に入らないよ（${W} × ${H} mm まで）。大きさを小さくしてね。`, true); return; }
-      opt.placements = shapes.map((_, i) => ({ shape: i, angle: 0, tx: M, ty: M }));
-      download(Nest.buildPDF(opt), 'application/pdf', 'koma-a4.pdf');
-      info('A4のPDFをつくったよ！');
-      return;
-    }
+  // 複製して敷きつめ、できた配置を done(opt) にわたす
+  function tiledSheet(done) {
+    const { W, H, M, opt } = sheetBase(), shapes = opt.shapes;
     const gap = Math.min(20, Math.max(0.5, parseFloat($('pdfGap').value) || 2));
-    info('ならべかたを計算中…');
-    $('btnPdf').disabled = true;
+    sheetInfo('ならべかたを計算中…');
+    $('btnPdf').disabled = $('btnDownload').disabled = true;
     setTimeout(() => {   // 「計算中」を先に表示させる
       const placed = Nest.packBest(shapes.map(s => s.contours[0].pts), { width: W, height: H, gap });
-      $('btnPdf').disabled = false;
-      if (!placed.length) { info('A4に1こも入らないよ。大きさを小さくしてね。', true); return; }
+      render();          // ボタンをもとにもどす
+      if (!placed.length) { sheetInfo('A4に1こも入らないよ。大きさを小さくしてね。', true); return; }
       opt.placements = placed.map(p => ({ shape: p.shape, angle: p.angle, tx: p.tx + M, ty: p.ty + M }));
       const counts = shapes.map((_, i) => placed.filter(p => p.shape === i).length);
       opt.text = `Copies: ${placed.length}` + (shapes.length > 1 ? ' (' + counts.map((c, i) => `#${i + 1} x ${c}`).join(', ') + ')' : '') +
         `   size: ${sizeMm()} mm   gap: ${gap} mm`;
-      download(Nest.buildPDF(opt), 'application/pdf', 'koma-a4.pdf');
-      info(`A4に ${placed.length} こ ならべたよ！` + (shapes.length > 1 ? `（${counts.map((c, i) => numLabel(i) + ' ' + c + 'こ').join('、')}）` : ''));
+      done(opt);
+      sheetInfo(`A4に ${placed.length} こ ならべたよ！` + (shapes.length > 1 ? `（${counts.map((c, i) => numLabel(i) + ' ' + c + 'こ').join('、')}）` : ''));
     }, 30);
+  }
+
+  $('btnPdf').addEventListener('click', () => {
+    const pdf = opt => download(Nest.buildPDF(opt), 'application/pdf', 'koma-a4.pdf');
+    if ($('pdfTile').checked) { tiledSheet(pdf); return; }
+    const { W, H, M, opt } = sheetBase(), r = state.res, k = mmPerUnit();
+    if (r.bbox.w * k > W || r.bbox.h * k > H) { sheetInfo(`A4に入らないよ（${W} × ${H} mm まで）。大きさを小さくしてね。`, true); return; }
+    opt.placements = opt.shapes.map((_, i) => ({ shape: i, angle: 0, tx: M, ty: M }));
+    pdf(opt);
+    sheetInfo('A4のPDFをつくったよ！');
   });
 
   rebuild();
