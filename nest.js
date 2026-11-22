@@ -200,7 +200,31 @@
     return pdf;   // ASCII のみ（文字数 = バイト数）
   }
 
-  const Nest = { A4, MARGIN, FOOTER, pack, packBest, buildPDF };
+  /* ---------- 敷きつめたSVG（A4 たて）。引数は buildPDF と同じ ---------- */
+  function buildSVG(opt) {
+    const f = v => (Math.round(v * 1000) / 1000).toString();
+    const cut = 'fill="none" stroke="#ff0000" stroke-width="0.1"', mark = 'fill="none" stroke="#0000ff" stroke-width="0.1"';
+    let body = '';
+    opt.placements.forEach((pl, n) => {
+      const s = opt.shapes[pl.shape], cs = Math.cos(pl.angle), sn = Math.sin(pl.angle);
+      const T = p => ({ x: p.x * cs - p.y * sn + pl.tx, y: p.x * sn + p.y * cs + pl.ty });
+      const d = s.contours.map(u => 'M' + u.pts.map(p => { const q = T(p); return f(q.x) + ' ' + f(q.y); }).join(' L') + ' Z').join(' ');
+      body += `  <g id="copy-${n + 1}">\n    <path d="${d}" fill-rule="evenodd" ${cut}/>\n`;
+      const g = T(s.centroid);
+      if (s.inside && opt.mark === 'hole') body += `    <circle cx="${f(g.x)}" cy="${f(g.y)}" r="${f(opt.holeDiameter / 2)}" ${cut}/>\n`;
+      else if (s.inside && opt.mark === 'cross') body += `    <path d="M${f(g.x - 3)} ${f(g.y)} H${f(g.x + 3)} M${f(g.x)} ${f(g.y - 3)} V${f(g.y + 3)}" ${mark}/>\n`;
+      body += '  </g>\n';
+    });
+    if (opt.text) {
+      const safe = String(opt.text).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+      body += `  <text id="copies" x="${MARGIN}" y="${f(A4.h - MARGIN - 1)}" font-family="Helvetica, Arial, sans-serif" font-size="3.5" fill="#000000">${safe}</text>\n`;
+    }
+    return `<?xml version="1.0" encoding="UTF-8"?>\n` +
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${A4.w}mm" height="${A4.h}mm" viewBox="0 0 ${A4.w} ${A4.h}">\n` +
+      `  <!-- 単位: mm / A4 / 赤 = 切断, 青 = けがき(彫刻), 黒 = こ数の表示 -->\n` + body + `</svg>\n`;
+  }
+
+  const Nest = { A4, MARGIN, FOOTER, pack, packBest, buildPDF, buildSVG };
   if (typeof module !== 'undefined' && module.exports) module.exports = Nest;
   else root.Nest = Nest;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

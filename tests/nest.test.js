@@ -71,3 +71,17 @@ test('PDF：A4・赤の切断線・穴・枚数の文字、xref の位置が正�
   const len = +/\/Length (\d+)/.exec(pdf)[1], s = pdf.indexOf('stream\n') + 7;
   assert.strictEqual(pdf.slice(s + len, s + len + 9), 'endstream');
 });
+
+test('敷きつめSVG：A4 サイズ・複製ごとの外形と穴・こ数の文字', () => {
+  const r = Geo.analyze([[{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }]]);
+  const svg = Nest.buildSVG({
+    shapes: r.shapes, placements: [{ shape: 0, angle: 0, tx: 5, ty: 5 }, { shape: 0, angle: Math.PI / 2, tx: 100, ty: 5 }],
+    mark: 'hole', holeDiameter: 3, text: 'Copies: 2',
+  });
+  assert.match(svg, /width="210mm" height="297mm" viewBox="0 0 210 297"/);
+  assert.match(svg, /<path d="M5 5 L45 5 L45 45 L5 45 Z"/);
+  assert.match(svg, /<path d="M100 5 L100 45 L60 45 L60 5 Z"/);   // 90°回転
+  assert.match(svg, /<circle cx="25" cy="25" r="1.5"/);
+  assert.match(svg, /<circle cx="80" cy="25" r="1.5"/);
+  assert.match(svg, />Copies: 2<\/text>/);
+});
