@@ -92,4 +92,8 @@ dialog .hint { margin: 0 0 6px; }
 dialog input[type=range] { width: 100%; }
 dialog .btn.primary { width: auto; flex: 1; }
 
+.pdfBox { margin-top: 12px; padding-top: 10px; border-top: 2px dashed #cfe3f5; }
+.pdfBox .btn { margin-top: 6px; }
+#pdfInfo { margin: 6px 0 0; font-weight: bold; }
+
 [hidden] { display: none !important; }
