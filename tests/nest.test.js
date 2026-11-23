@@ -85,3 +85,21 @@ test('敷きつめSVG：A4 サイズ・複製ごとの外形と穴・こ数の�
   assert.match(svg, /<circle cx="80" cy="25" r="1.5"/);
   assert.match(svg, />Copies: 2<\/text>/);
 });
+
+test('格子ならべ：三角形は 180° 回転の相方と組んで密につまる（二重格子）', () => {
+  const tri = [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 25, y: 45 }];
+  const pls = Nest.packBest([tri], { width: W, height: H, gap: 2 });
+  check([tri], pls, W, H, 2);
+  assert.strictEqual(pls.method, 'double-lattice');
+  assert.ok(pls.density > 0.84, `密度 ${pls.density}`);   // すきま 2mm での理論値は約 0.877
+  assert.ok(pls.length >= 34, `こ数 ${pls.length}`);
+});
+
+test('格子ならべ：円は六角形状にならぶ', () => {
+  const c = [];
+  for (let i = 0; i < 48; i++) c.push({ x: 20 * Math.cos(i / 48 * 2 * Math.PI), y: 20 * Math.sin(i / 48 * 2 * Math.PI) });
+  const pls = Nest.packBest([c], { width: W, height: H, gap: 2 });
+  check([c], pls, W, H, 2);
+  assert.ok(pls.density > 0.79, `密度 ${pls.density}`);   // 六方格子の理論値は約 0.822
+  assert.ok(pls.length >= 28, `こ数 ${pls.length}`);
+});
