@@ -45,10 +45,14 @@
     }
     // 輪郭線の通るマスもぬる（細い所の取りこぼし防止）
     for (let i = 0, n = r.length; i < n; i++) {
-      const p = r[i], q = r[(i + 1) % n], steps = Math.max(1, Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) / (cell * 0.5)));
+      const p = r[i], q = r[(i + 1) % n], steps = Math.max(1, Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) / (cell * 0.25)));
       for (let t = 0; t <= steps; t++) {
-        const x = Math.floor((p.x + (q.x - p.x) * t / steps) / cell) - gx, y = Math.floor((p.y + (q.y - p.y) * t / steps) / cell) - gy;
-        if (x >= 0 && y >= 0 && x < w && y < h) mask[y * w + x] = 1;
+        const px = (p.x + (q.x - p.x) * t / steps) / cell, py = (p.y + (q.y - p.y) * t / steps) / cell;
+        // マスのかどをかすめる線も取りこぼさないよう、少しずらした点もぬる
+        for (const [ox, oy] of [[0, 0], [0.3, 0], [-0.3, 0], [0, 0.3], [0, -0.3]]) {
+          const x = Math.floor(px + ox) - gx, y = Math.floor(py + oy) - gy;
+          if (x >= 0 && y >= 0 && x < w && y < h) mask[y * w + x] = 1;
+        }
       }
     }
     // d マス太らせる（横 → 縦）
@@ -82,7 +86,7 @@
     opt = opt || {};
     const W = opt.width, H = opt.height, gap = opt.gap == null ? 2 : opt.gap;
     const cell = opt.cell || 0.5, nRot = opt.rotations || 24, limit = opt.limit || 1000;
-    const d = Math.ceil(gap / 2 / cell) + 1;
+    const d = Math.ceil(gap / 2 / cell);   // マスクは形を必ずおおうので、マスクどうしが重ならなければ すきまは gap 以上
     // マス目は用紙より d マスずつ広くとる（太らせた分は用紙の外にはみ出してよい）
     const GW = Math.floor(W / cell) + 2 * d, GH = Math.floor(H / cell) + 2 * d, PW = GW + 1;
     const occ = new Uint8Array(GW * GH), pref = new Int32Array(PW * GH);
@@ -294,6 +298,7 @@
   /* マス目で見つけた格子はまるめ誤差をふくむので、正確な多角形どうしの距離を測りながら
      格子全体を少しずつのびちぢみさせて、すきまを指定値ぎりぎりに合わせる。 */
   function tighten(A, lat, gap) {
+    gap = Math.max(gap, 0.01);   // 0 のときも交差（距離 0）をはじけるように
     const B = lat.t ? A.map(p => ({ x: -p.x, y: -p.y })) : null, bbA = boxOf(A), bbB = B && boxOf(B);
     const near = (b1, b2, x, y) => b2.minX + x - b1.maxX < gap && b1.minX - b2.maxX - x < gap &&
       b2.minY + y - b1.maxY < gap && b1.minY - b2.maxY - y < gap;
