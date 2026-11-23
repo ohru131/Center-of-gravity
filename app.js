@@ -726,7 +726,8 @@
   // 複製して敷きつめ、できた配置を done(opt) にわたす
   function tiledSheet(done) {
     const { W, H, M, opt } = sheetBase(), shapes = opt.shapes;
-    const gap = Math.min(20, Math.max(0.5, parseFloat($('pdfGap').value) || 2));
+    const gapIn = parseFloat($('pdfGap').value);
+    const gap = isNaN(gapIn) ? 2 : Math.min(20, Math.max(0, gapIn));   // 0 = くっつけてならべる
     sheetInfo('ならべかたを計算中…');
     $('btnPdf').disabled = $('btnDownload').disabled = true;
     setTimeout(() => {   // 「計算中」を先に表示させる

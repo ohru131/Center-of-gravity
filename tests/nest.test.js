@@ -103,3 +103,29 @@ test('格子ならべ：円は六角形状にならぶ', () => {
   assert.ok(pls.density > 0.79, `密度 ${pls.density}`);   // 六方格子の理論値は約 0.822
   assert.ok(pls.length >= 28, `こ数 ${pls.length}`);
 });
+
+test('すきま 0：重ならずに、くっつけてならぶ', () => {
+  const sq = [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }];
+  // 重なり = 辺が交わる、または一方の重心がもう一方の中にある（ぴったり接するのは可）
+  const noOverlap = (outline, pls) => {
+    const ps = pls.map(pl => place(outline, pl));
+    for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
+      const ci = Geo.polygonCentroid(ps[i]), cj = Geo.polygonCentroid(ps[j]);
+      assert.ok(!Geo.contoursIntersect(ps[i], ps[j]) && !Geo.pointInPolygon(ci, ps[j]) && !Geo.pointInPolygon(cj, ps[i]), `図形 ${i} と ${j} が重なり`);
+    }
+  };
+  const pls = Nest.packBest([sq], { width: W, height: H, gap: 0 });
+  check([sq], pls, W, H, 0);
+  noOverlap(sq, pls);
+  assert.strictEqual(pls.length, 30);   // 5 x 6 がすきまなく入る（200 x 279 mm）
+  const placed = pls.map(pl => place(sq, pl));
+  let closest = Infinity;
+  for (let i = 0; i < placed.length; i++) for (let j = i + 1; j < placed.length; j++) closest = Math.min(closest, minDist(placed[i], placed[j]));
+  assert.ok(closest < 0.2, `となりとのすきま ${closest}`);
+
+  const tri = [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 25, y: 45 }];
+  const t = Nest.packBest([tri], { width: W, height: H, gap: 0 });
+  check([tri], t, W, H, 0);
+  noOverlap(tri, t);
+  assert.ok(t.density > 0.97, `密度 ${t.density}`);   // 三角形は 180° 回転と組んで平面をうめつくす
+});
