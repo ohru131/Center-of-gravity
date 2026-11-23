@@ -25,6 +25,16 @@ function check(outlines, pls, W, H, gap) {
     assert.ok(d >= gap - 1e-6, `図形 ${i} と ${j} のすきま ${d} < ${gap}`);
   }
 }
+// 重なり = 辺が交わる、または頂点が相手の内がわに 0.02mm より深く入っている（ぴったり接するのは可）
+function overlaps(a, b) {
+  if (Geo.contoursIntersect(a, b)) return true;
+  const deep = (p, poly) => Geo.pointInPolygon(p, poly) && Geo.distToContour(p, poly) > 0.02;
+  return a.some(p => deep(p, b)) || b.some(p => deep(p, a));
+}
+function assertNoOverlap(outlines, pls) {
+  const ps = pls.map(pl => place(outlines[pl.shape], pl));
+  for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) assert.ok(!overlaps(ps[i], ps[j]), `図形 ${i} と ${j} が重なり`);
+}
 const W = 200, H = 279;
 
 test('正方形 40mm：重ならず、すきまを守って A4 にたくさん入る', () => {
@@ -106,17 +116,9 @@ test('格子ならべ：円は六角形状にならぶ', () => {
 
 test('すきま 0：重ならずに、くっつけてならぶ', () => {
   const sq = [{ x: 0, y: 0 }, { x: 40, y: 0 }, { x: 40, y: 40 }, { x: 0, y: 40 }];
-  // 重なり = 辺が交わる、または一方の重心がもう一方の中にある（ぴったり接するのは可）
-  const noOverlap = (outline, pls) => {
-    const ps = pls.map(pl => place(outline, pl));
-    for (let i = 0; i < ps.length; i++) for (let j = i + 1; j < ps.length; j++) {
-      const ci = Geo.polygonCentroid(ps[i]), cj = Geo.polygonCentroid(ps[j]);
-      assert.ok(!Geo.contoursIntersect(ps[i], ps[j]) && !Geo.pointInPolygon(ci, ps[j]) && !Geo.pointInPolygon(cj, ps[i]), `図形 ${i} と ${j} が重なり`);
-    }
-  };
   const pls = Nest.packBest([sq], { width: W, height: H, gap: 0 });
   check([sq], pls, W, H, 0);
-  noOverlap(sq, pls);
+  assertNoOverlap([sq], pls);
   assert.strictEqual(pls.length, 30);   // 5 x 6 がすきまなく入る（200 x 279 mm）
   const placed = pls.map(pl => place(sq, pl));
   let closest = Infinity;
@@ -126,6 +128,34 @@ test('すきま 0：重ならずに、くっつけてならぶ', () => {
   const tri = [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 25, y: 45 }];
   const t = Nest.packBest([tri], { width: W, height: H, gap: 0 });
   check([tri], t, W, H, 0);
-  noOverlap(tri, t);
+  assertNoOverlap([tri], t);
   assert.ok(t.density > 0.97, `密度 ${t.density}`);   // 三角形は 180° 回転と組んで平面をうめつくす
+});
+
+test('形が複数種類：帯に分けて格子ならべ、どの形もほぼ同じこ数', () => {
+  const tri = [{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 25, y: 45 }], c = [];
+  for (let i = 0; i < 24; i++) c.push({ x: 15 * Math.cos(i / 24 * 2 * Math.PI), y: 15 * Math.sin(i / 24 * 2 * Math.PI) });
+  const L = [{ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 20 }, { x: 20, y: 20 }, { x: 20, y: 60 }, { x: 0, y: 60 }];
+  for (const set of [[tri, c], [tri, c, L]]) {
+    const greedy = Nest.pack(set, { width: W, height: H, gap: 2 });
+    const pls = Nest.packBest(set, { width: W, height: H, gap: 2 });
+    check(set, pls, W, H, 2);
+    assert.strictEqual(pls.method, 'bands');
+    const counts = set.map((_, i) => pls.filter(p => p.shape === i).length);
+    assert.ok(pls.length >= greedy.length, `格子 ${pls.length} こ < 貪欲法 ${greedy.length} こ`);
+    assert.ok(Math.min(...counts) >= 0.5 * Math.max(...counts), `こ数のかたより ${counts}`);
+  }
+});
+
+test('原点から離れた座標の形でも、重ならず同じこ数（180° 回転の相方の見落とし防止）', () => {
+  const L = [{ x: 0, y: 0 }, { x: 60, y: 0 }, { x: 60, y: 20 }, { x: 20, y: 20 }, { x: 20, y: 60 }, { x: 0, y: 60 }];
+  const far = L.map(p => ({ x: p.x + 130, y: p.y + 90 }));
+  const tri = [{ x: 300, y: 200 }, { x: 350, y: 200 }, { x: 325, y: 245 }];
+  const a = Nest.packBest([L], { width: W, height: H, gap: 2 }), b = Nest.packBest([far], { width: W, height: H, gap: 2 });
+  check([far], b, W, H, 2);
+  assert.strictEqual(b.length, a.length);
+  assert.ok(b.density > 0.8 && b.density < 1, `密度 ${b.density}`);
+  const m = Nest.packBest([far, tri], { width: W, height: H, gap: 0 });
+  check([far, tri], m, W, H, 0);
+  assertNoOverlap([far, tri], m);
 });

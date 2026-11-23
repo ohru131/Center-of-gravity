@@ -79,6 +79,8 @@
     return { w, h, runs, gx, gy, angle: a };
   }
 
+  const maskMemo = new WeakMap();   // 外形（点列）ごとの、回転ずみマスクの使いまわし
+
   /* 図形（外形の点列, mm）を W×H mm の中に、重ならないよう回転させながらできるだけ多くならべる。
      左上から順に「入る最初の場所」をさがし、回転のうち いちばん上につめられるものを採用（貪欲法）。
      複数の図形は順番にくりかえす。戻り値 [{ shape, angle, tx, ty }]：点を angle 回して (tx,ty) 動かす。 */
@@ -94,8 +96,9 @@
     const variants = outlines.map(pts => {
       const list = [];
       for (let k = 0; k < nRot; k++) {
-        const m = rasterize(pts, k * 2 * Math.PI / nRot, cell, d);
-        if (m.w <= GW && m.h <= GH) list.push(Object.assign(m, { next: 0 }));   // next = 次にさがしはじめる位置
+        const key = [k, nRot, cell, d].join(','), memo = maskMemo.get(pts) || maskMemo.set(pts, new Map()).get(pts);
+        const m = memo.get(key) || memo.set(key, rasterize(pts, k * 2 * Math.PI / nRot, cell, d)).get(key);
+        if (m.w <= GW && m.h <= GH) list.push(Object.assign({}, m, { next: 0 }));   // next = 次にさがしはじめる位置
       }
       return list;
     });
@@ -220,7 +223,7 @@
 
   /* 面積最小の格子をさがす。valid(dx,dy) = そのずらし方で重ならない。
      u は各方向で「ぎりぎり重ならない」最短のずらし、v は u に沿って位置を変えながら、いちばん低く積める所。 */
-  function bestLattice(valid, reach, dirs) {
+  function bestLattice(valid, reach, dirs, bound) {   // bound: この面積以上の格子はさがさない
     const R = 3;
     const ok = (ux, uy, vx, vy) => {
       for (let i = 0; i <= R; i++) for (let j = (i ? -R : 1); j <= R; j++) {
@@ -240,11 +243,11 @@
       const len = Math.hypot(ux, uy);
       let found = Infinity;
       for (let hgt = 1; hgt <= reach && hgt <= found + 1; hgt++) {
-        if (best && len * (hgt - 1) >= best.area) break;   // これ以上高くしても今の最良に勝てない
+        if (len * (hgt - 1) >= (best ? best.area : bound || Infinity)) break;   // これ以上高くしても今の最良に勝てない
         for (let sft = 0; sft < len; sft++) {
           const vx = Math.round(sft * cx - hgt * cy), vy = Math.round(sft * cy + hgt * cx);
           const area = Math.abs(ux * vy - uy * vx);
-          if (!area || (best && area >= best.area)) continue;
+          if (!area || area >= (best ? best.area : bound || Infinity)) continue;
           if (valid(vx, vy) && ok(ux, uy, vx, vy)) { best = { ux, uy, vx, vy, area }; found = Math.min(found, hgt); }
         }
       }
@@ -284,14 +287,54 @@
     return { lat: cur, t: ct };
   }
 
-  // 2つの多角形の最短距離（交差・包含なら 0）
-  function polyDist(a, b) {
-    if (Geo.contoursIntersect(a, b) || Geo.pointInPolygon(a[0], b) || Geo.pointInPolygon(b[0], a)) return 0;
-    let d = Infinity;
-    for (const p of a) d = Math.min(d, Geo.distToContour(p, b));
-    for (const p of b) d = Math.min(d, Geo.distToContour(p, a));
-    return d;
+  /* 2つの多角形（a と、b を (bx,by) だけずらしたもの）が limit より近いか（交差・包含もふくむ）。
+     相手のわく（limit だけ広げた）にかかる辺だけをくらべるので、接しているだけの組なら速い。 */
+  function edgesOf(pts) {
+    const n = pts.length, e = new Float64Array(n * 4);
+    for (let i = 0; i < n; i++) { const p = pts[i], q = pts[(i + 1) % n]; e[i * 4] = p.x; e[i * 4 + 1] = p.y; e[i * 4 + 2] = q.x; e[i * 4 + 3] = q.y; }
+    return e;
   }
+  function pointSeg2(px, py, ax, ay, bx, by) {
+    const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+    let t = l2 ? ((px - ax) * dx + (py - ay) * dy) / l2 : 0;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const ex = px - ax - t * dx, ey = py - ay - t * dy;
+    return ex * ex + ey * ey;
+  }
+  function closer(A, B, bx, by, limit) {
+    // A, B: { pts, edges, box }
+    const a = A.box, b = B.box, l2 = limit * limit;
+    const x0 = Math.max(a.minX, b.minX + bx) - limit, x1 = Math.min(a.maxX, b.maxX + bx) + limit;
+    const y0 = Math.max(a.minY, b.minY + by) - limit, y1 = Math.min(a.maxY, b.maxY + by) + limit;
+    if (x0 > x1 || y0 > y1) return false;
+    const pick = (E, ox, oy) => {
+      const out = [];
+      for (let i = 0; i < E.length; i += 4) {
+        const ax = E[i] + ox, ay = E[i + 1] + oy, cx = E[i + 2] + ox, cy = E[i + 3] + oy;
+        if (Math.max(ax, cx) < x0 || Math.min(ax, cx) > x1 || Math.max(ay, cy) < y0 || Math.min(ay, cy) > y1) continue;
+        out.push(ax, ay, cx, cy);
+      }
+      return out;
+    };
+    const ea = pick(A.edges, 0, 0), eb = pick(B.edges, bx, by);
+    for (let i = 0; i < ea.length; i += 4) {
+      const ax = ea[i], ay = ea[i + 1], cx = ea[i + 2], cy = ea[i + 3];
+      for (let j = 0; j < eb.length; j += 4) {
+        const px = eb[j], py = eb[j + 1], qx = eb[j + 2], qy = eb[j + 3];
+        if (pointSeg2(ax, ay, px, py, qx, qy) < l2 || pointSeg2(cx, cy, px, py, qx, qy) < l2 ||
+            pointSeg2(px, py, ax, ay, cx, cy) < l2 || pointSeg2(qx, qy, ax, ay, cx, cy) < l2) return true;
+        // 交差（端点どうしが limit 以上はなれたまま交わる場合）
+        const d1 = (cx - ax) * (py - ay) - (cy - ay) * (px - ax), d2 = (cx - ax) * (qy - ay) - (cy - ay) * (qx - ax);
+        const d3 = (qx - px) * (ay - py) - (qy - py) * (ax - px), d4 = (qx - px) * (cy - py) - (qy - py) * (cx - px);
+        if (((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0))) return true;
+      }
+    }
+    // 一方がもう一方の中にすっぽり入っている場合
+    const p = A.pts[0], q = B.pts[0];
+    return Geo.pointInPolygon({ x: p.x - bx, y: p.y - by }, B.pts) || Geo.pointInPolygon({ x: q.x + bx, y: q.y + by }, A.pts);
+  }
+  const solid = pts => ({ pts, edges: edgesOf(pts), box: Geo.bbox([pts]) });
+
   const boxOf = pts => Geo.bbox([pts]);
   const shift = (pts, x, y) => pts.map(p => ({ x: p.x + x, y: p.y + y }));
 
@@ -299,9 +342,7 @@
      格子全体を少しずつのびちぢみさせて、すきまを指定値ぎりぎりに合わせる。 */
   function tighten(A, lat, gap) {
     gap = Math.max(gap, 0.01);   // 0 のときも交差（距離 0）をはじけるように
-    const B = lat.t ? A.map(p => ({ x: -p.x, y: -p.y })) : null, bbA = boxOf(A), bbB = B && boxOf(B);
-    const near = (b1, b2, x, y) => b2.minX + x - b1.maxX < gap && b1.minX - b2.maxX - x < gap &&
-      b2.minY + y - b1.maxY < gap && b1.minY - b2.maxY - y < gap;
+    const SA = solid(A), B = lat.t ? solid(A.map(p => ({ x: -p.x, y: -p.y }))) : null;
     // 格子を「u の向きに a 倍、それと直角の向きに b 倍」のびちぢみさせる
     const len = Math.hypot(lat.u.x, lat.u.y), ex = lat.u.x / len, ey = lat.u.y / len;
     const warp = (p, a, b) => {
@@ -312,8 +353,8 @@
       const R = 3, u = warp(lat.u, a, b), v = warp(lat.v, a, b), t = B && warp(lat.t, a, b);
       for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) {
         const x = i * u.x + j * v.x, y = i * u.y + j * v.y;
-        if ((i > 0 || (i === 0 && j > 0)) && near(bbA, bbA, x, y) && polyDist(A, shift(A, x, y)) < gap) return false;
-        if (B && near(bbA, bbB, x + t.x, y + t.y) && polyDist(A, shift(B, x + t.x, y + t.y)) < gap) return false;
+        if ((i > 0 || (i === 0 && j > 0)) && closer(SA, SA, x, y, gap)) return false;
+        if (B && closer(SA, B, x + t.x, y + t.y, gap)) return false;
       }
       return true;
     };
@@ -336,8 +377,8 @@
       const R = 3;
       for (let i = -R; i <= R; i++) for (let j = -R; j <= R; j++) {
         const x = i * u2.x + j * v2.x, y = i * u2.y + j * v2.y;
-        if ((i > 0 || (i === 0 && j > 0)) && near(bbA, bbA, x, y) && polyDist(A, shift(A, x, y)) < gap) return false;
-        if (B && near(bbA, bbB, x + t.x, y + t.y) && polyDist(A, shift(B, x + t.x, y + t.y)) < gap) return false;
+        if ((i > 0 || (i === 0 && j > 0)) && closer(SA, SA, x, y, gap)) return false;
+        if (B && closer(SA, B, x + t.x, y + t.y, gap)) return false;
       }
       return true;
     };
@@ -356,9 +397,9 @@
   }
 
   // 格子を角度 phi で用紙に置き、ずらし方を変えながら いちばん多く入る配置を返す
-  function fitLattice(A, lat, W, H) {
+  function fitLattice(A, lat, W, H, shape, STEPS, PH) {
     let best = [];
-    const STEPS = 60, PH = 8;
+    shape = shape || 0; STEPS = STEPS || 60; PH = PH || 8;
     for (let s = 0; s < STEPS; s++) {
       const phi = Math.PI * s / STEPS, c = Math.cos(phi), sn = Math.sin(phi);
       const rot = p => ({ x: p.x * c - p.y * sn, y: p.x * sn + p.y * c });
@@ -375,10 +416,10 @@
         const ox = (a * u.x + b * v.x) / PH, oy = (a * u.y + b * v.y) / PH, out = [];
         for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
           const x = ox + i * u.x + j * v.x, y = oy + i * u.y + j * v.y;
-          if (x + bb.minX >= 0 && x + bb.maxX <= W && y + bb.minY >= 0 && y + bb.maxY <= H) out.push({ shape: 0, angle: phi, tx: x, ty: y });
+          if (x + bb.minX >= 0 && x + bb.maxX <= W && y + bb.minY >= 0 && y + bb.maxY <= H) out.push({ shape, angle: phi, tx: x, ty: y });
           if (t) {
             const bx = x + t.x, by = y + t.y;   // 180° 回転した相方
-            if (bx - bb.maxX >= 0 && bx - bb.minX <= W && by - bb.maxY >= 0 && by - bb.minY <= H) out.push({ shape: 0, angle: phi + Math.PI, tx: bx, ty: by });
+            if (bx - bb.maxX >= 0 && bx - bb.minX <= W && by - bb.maxY >= 0 && by - bb.minY <= H) out.push({ shape, angle: phi + Math.PI, tx: bx, ty: by });
           }
         }
         if (out.length > best.length) best = out;
@@ -387,10 +428,12 @@
     return best;
   }
 
-  // 1種類の形を、格子・二重格子でならべた配置の候補を返す（密度の高い順に数個）
-  function latticeLayouts(pts, opt) {
-    const W = opt.width, H = opt.height, gap = opt.gap == null ? 2 : opt.gap;
-    const A = Geo.simplifyClosed(pts, 0.05), bb = boxOf(A);
+  // 1種類の形について、格子・二重格子の候補（すきま調整ずみ）を密度の高い順に返す
+  function latticeCandidates(pts, gap) {
+    /* 形をわくの中心が原点にくるよう動かしてから調べる（180° 回転は原点まわりなので、
+       形が原点から遠いと相方がはるか遠くへ行き、近くの重なりを見落とす）。center は配置を元の座標にもどすのに使う。 */
+    const b0 = boxOf(pts), center = { x: (b0.minX + b0.maxX) / 2, y: (b0.minY + b0.maxY) / 2 };
+    const A = Geo.simplifyClosed(shift(pts, -center.x, -center.y), 0.05), bb = boxOf(A);
     const cell = Math.max(0.5, Math.max(bb.w, bb.h) / 110);   // 大きい形ほど粗いマス目（あとで正確につめ直す）
     // 太らせる幅はすきまの半分ちょうど。マス目のまるめで出る誤差は tighten が正確な距離で直す
     const d = Math.max(1, Math.round(gap / 2 / cell));
@@ -409,19 +452,20 @@
     const raw = [];
     // 二重格子：相方（180° 回転）の置き場所 t を、ぎりぎり重ならない位置からいくつか選んでためす
     const seen = new Set();
+    let least = Infinity;   // これまでの最小面積。それより 12% 以上大きい格子は調べない
     for (let k = 0; k < 36; k++) {
       const be = 2 * Math.PI * k / 36, cx = Math.cos(be), cy = Math.sin(be);
       let tx = 0, ty = 0, r = 0;
       for (; r <= reach; r++) { tx = Math.round(r * cx); ty = Math.round(r * cy); if (!fAB(tx, ty)) break; }
       if (r > reach || seen.has(tx + ',' + ty)) continue;
       seen.add(tx + ',' + ty);
-      const lat = bestLattice(validDouble(tx, ty), reach, 30);
-      if (lat) raw.push({ lat, t: { x: tx, y: ty } });
+      const lat = bestLattice(validDouble(tx, ty), reach, 30, least * 1.12);
+      if (lat) { raw.push({ lat, t: { x: tx, y: ty } }); least = Math.min(least, lat.area); }
     }
     // 有望なものだけ、山登り法でみがく
     raw.sort((p, q) => p.lat.area - q.lat.area);
     const done = new Set();
-    for (const c of raw.slice(0, 8)) {
+    for (const c of raw.slice(0, 12)) {
       const r = refineLattice(c.lat, c.t, validDouble, (x, y) => !fAB(x, y)), L = r.lat;
       const key = [L.ux, L.uy, L.vx, L.vy, r.t.x, r.t.y].join(',');
       if (done.has(key)) continue;
@@ -430,15 +474,93 @@
     }
     // 1こあたりの面積が小さい（= 密な）順に上位をえらび、正確につめ直してから用紙に置く
     cands.sort((p, q) => p.area / p.per - q.area / q.per);
-    const picked = cands.filter(c => !c.t).slice(0, 1).concat(cands.filter(c => c.t).slice(0, 4));
-    const layouts = [];
+    const picked = cands.filter(c => !c.t).slice(0, 1).concat(cands.filter(c => c.t).slice(0, 8));
+    const out = [];
     for (const c of picked) {
       for (const lat of tighten(A, c, gap) || []) {
-        const placed = fitLattice(A, lat, W, H);
-        if (placed.length) layouts.push({ placements: placed, double: !!c.t, density: c.per * Math.abs(Geo.signedArea(A)) / lat.area });
+        out.push({ A, center, lat, double: !!c.t, density: c.per * Math.abs(Geo.signedArea(A)) / lat.area });
       }
     }
+    return out.sort((p, q) => q.density - p.density);
+  }
+
+  // 候補 c の格子を用紙に置く。中心を原点に動かした分を、配置の平行移動にもどす
+  function fitCandidate(c, W, H, shape, steps, ph) {
+    return fitLattice(c.A, c.lat, W, H, shape, steps, ph).map(pl => {
+      const cs = Math.cos(pl.angle), sn = Math.sin(pl.angle);
+      return { shape: pl.shape, angle: pl.angle, tx: pl.tx - (c.center.x * cs - c.center.y * sn), ty: pl.ty - (c.center.x * sn + c.center.y * cs) };
+    });
+  }
+
+  /* 最終確認：配置どうしが本当に重なっていないか、正確な距離で調べる。
+     格子の探索は近くのとなりしか見ないので、見落としがあればその配置はすてる。 */
+  function verify(outlines, placements, gap) {
+    const polys = placements.map(pl => solid(placePts(outlines[pl.shape], pl))), g = Math.max(gap, 0.01) - 0.005;
+    for (let i = 0; i < polys.length; i++) for (let j = i + 1; j < polys.length; j++) {
+      if (closer(polys[i], polys[j], 0, 0, g)) return false;
+    }
+    return true;
+  }
+
+  // 1種類の形を、格子・二重格子で用紙にならべた配置の候補を返す
+  function latticeLayouts(pts, opt) {
+    const layouts = [];
+    for (const c of latticeCandidates(pts, opt.gap == null ? 2 : opt.gap)) {
+      const placed = fitCandidate(c, opt.width, opt.height);
+      if (placed.length && verify([pts], placed, opt.gap == null ? 2 : opt.gap)) layouts.push({ placements: placed, double: c.double, density: c.density });
+    }
     return layouts;
+  }
+
+  /* 形が複数種類のとき：用紙を横の帯に分け、帯ごとに1種類を格子でならべる。
+     帯の高さは「どの形も同じこ数以上入る」ように、こ数の表（高さ → 入るこ数）から決める。 */
+  function bandLayout(outlines, opt) {
+    const W = opt.width, H = opt.height, k = outlines.length;
+    const gap = Math.max(opt.gap == null ? 2 : opt.gap, 0.02);   // 帯どうしがぴったり重ならないよう、最小でもわずかにあける
+    const cands = outlines.map(o => latticeCandidates(o, gap).slice(0, 3));
+    if (cands.some(c => !c.length)) return null;
+    // 高さ h の帯に入るこ数（粗い探索）
+    const STEP = 6, hs = [];
+    for (let h = STEP; h < H; h += STEP) hs.push(h);
+    hs.push(H);
+    const table = cands.map((list, i) => hs.map(h => Math.max(...list.map(c => fitCandidate(c, W, h, i, 30, 4).length))));
+    const room = H - (k - 1) * gap;
+    let heights = null;
+    for (let n = Math.max(...table.map(t => t[t.length - 1])); n >= 1 && !heights; n--) {
+      const idx = table.map(t => t.findIndex(c => c >= n));
+      if (idx.every(j => j >= 0) && idx.reduce((sum, j) => sum + hs[j], 0) <= room) heights = idx.map(j => hs[j]);
+    }
+    if (!heights) return null;
+    // あまった高さは、こ数がいちばん効率よくふえる帯から順に足していく。最後のあまりは等分
+    let left = room - heights.reduce((p, q) => p + q, 0);
+    for (;;) {
+      let pick = -1, rate = 0, to = 0;
+      table.forEach((t, i) => {
+        const cur = t[hs.indexOf(heights[i])];
+        for (let j = hs.indexOf(heights[i]) + 1; j < hs.length && hs[j] - heights[i] <= left; j++) {
+          const r = (t[j] - cur) / (hs[j] - heights[i]);
+          if (r > rate) { rate = r; pick = i; to = hs[j]; }
+        }
+      });
+      if (pick < 0) break;
+      left -= to - heights[pick];
+      heights[pick] = to;
+    }
+    const spare = left / k;
+    const placements = [];
+    let y = 0, density = 0;
+    cands.forEach((list, i) => {
+      const h = heights[i] + spare;
+      let best = [], dens = 0;
+      for (const c of list) {
+        const placed = fitCandidate(c, W, h, i);
+        if (placed.length > best.length && verify(outlines, placed, gap)) { best = placed; dens = c.density; }
+      }
+      for (const pl of best) placements.push(Object.assign(pl, { ty: pl.ty + y }));
+      density += dens / k;
+      y += h + gap;
+    });
+    return { placements, density, heights };
   }
 
   // 全体を用紙のまん中によせる
@@ -450,19 +572,21 @@
   }
 
   /* いちばん多く入るならべ方を返す。
-     形が1種類：格子・二重格子でならべ、あまった所を貪欲法でうめる。貪欲法だけの結果とくらべて多いほうを採用（同数なら格子）。
-     形が複数：貪欲法（回転のきざみ・方針を数通り）。 */
+     形が1種類：格子・二重格子でならべ、あまった所を貪欲法でうめる。
+     形が複数：用紙を帯に分けて、帯ごとに1種類を格子でならべ、あまった所を貪欲法でうめる。
+     貪欲法だけの結果ともくらべる。1種類なら多いほう（同数なら格子）、複数なら貪欲法が 5% より多いときだけ貪欲法。 */
   function packBest(outlines, opt) {
     let best = [], method = 'greedy';
-    for (const rotations of [24, 4, 8, 2]) for (const order of ['bottom', 'top']) {
+    const multi = outlines.length > 1;   // 複数種類は計算が重いので、ためす通り数をしぼる
+    for (const rotations of (multi ? [24, 4] : [24, 4, 8, 2])) for (const order of (multi ? ['bottom'] : ['bottom', 'top'])) {
       const r = pack(outlines, Object.assign({}, opt, { rotations, order }));
       if (r.length > best.length) best = r;
     }
     if (outlines.length === 1 && Geo) {
       let bestLat = null;
-      const lays = latticeLayouts(outlines[0], opt), most = Math.max(0, ...lays.map(l => l.placements.length));
+      // こ数の多い順に上位3つだけ、あまった所をうめてくらべる（うめる計算が重いため）
+      const lays = latticeLayouts(outlines[0], opt).sort((p, q) => q.placements.length - p.placements.length || q.density - p.density).slice(0, 3);
       for (const lay of lays) {
-        if (lay.placements.length < most - 1) continue;   // 見こみのないものは、すきまうめを省く
         const filled = pack(outlines, Object.assign({}, opt, { rotations: 24, preplaced: lay.placements }));
         const better = !bestLat || filled.length > bestLat.all.length ||
           (filled.length === bestLat.all.length && lay.placements.length > bestLat.regular);
@@ -473,6 +597,20 @@
         method = bestLat.double ? 'double-lattice' : 'lattice';
         best.density = bestLat.density;
       }
+    } else if (outlines.length > 1 && Geo) {
+      // 横の帯と、たての帯（用紙を 90° 回した向きで帯に分け、もどす）の両方をためす
+      const W = opt.width, H = opt.height, tries = [bandLayout(outlines, opt)];
+      const turned = bandLayout(outlines, Object.assign({}, opt, { width: H, height: W }));
+      if (turned) {
+        tries.push({ density: turned.density, placements: turned.placements.map(pl =>
+          ({ shape: pl.shape, angle: pl.angle + Math.PI / 2, tx: W - pl.ty, ty: pl.tx })) });
+      }
+      // 格子だけで多く入ったほうをえらび、あまった所をうめる
+      const band = tries.filter(Boolean).sort((p, q) => q.placements.length - p.placements.length)[0];
+      const bestBand = band && { density: band.density,
+        all: pack(outlines, Object.assign({}, opt, { rotations: 24, preplaced: band.placements })) };
+      // 規則的なならびを優先：貪欲法が 5% より多く入るときだけ貪欲法にする
+      if (bestBand && bestBand.all.length * 1.05 >= best.length) { best = bestBand.all; method = 'bands'; best.density = bestBand.density; }
     }
     best = Object.assign(centerOnPage(outlines, best, opt.width, opt.height), { method, density: best.density });
     return best;
@@ -554,7 +692,7 @@
       `  <!-- 単位: mm / A4 / 赤 = 切断, 青 = けがき(彫刻), 黒 = こ数の表示 -->\n` + body + `</svg>\n`;
   }
 
-  const Nest = { A4, MARGIN, FOOTER, pack, packBest, buildPDF, buildSVG };
+  const Nest = { A4, MARGIN, FOOTER, pack, packBest, buildPDF, buildSVG, _bandLayout: bandLayout };
   if (typeof module !== 'undefined' && module.exports) module.exports = Nest;
   else root.Nest = Nest;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

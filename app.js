@@ -739,7 +739,7 @@
       opt.text = `Copies: ${placed.length}` + (shapes.length > 1 ? ' (' + counts.map((c, i) => `#${i + 1} x ${c}`).join(', ') + ')' : '') +
         `   size: ${sizeMm()} mm   gap: ${gap} mm`;
       done(opt);
-      const how = { lattice: '同じ向きの格子ならべ', 'double-lattice': '180°回転と組にした格子ならべ' }[placed.method];
+      const how = { lattice: '同じ向きの格子ならべ', 'double-lattice': '180°回転と組にした格子ならべ', bands: '形ごとの帯に分けた格子ならべ' }[placed.method];
       sheetInfo(`A4に ${placed.length} こ ならべたよ！` + (shapes.length > 1 ? `（${counts.map((c, i) => numLabel(i) + ' ' + c + 'こ').join('、')}）` : '') +
         (how ? `（${how}、うまった面積 ${Math.round(placed.density * 100)}%）` : ''));
     }, 30);
